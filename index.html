@@ -289,6 +289,7 @@ body {
 }
 .mode-include { background: var(--incl-bg); border-color: var(--incl-border); color: var(--incl-fg); }
 .mode-exclude { background: var(--excl-bg); border-color: var(--excl-border); color: var(--excl-fg); }
+.f-row-disabled { opacity: 0.4; }
 .seg-neutral  { background: var(--surface2); border-color: var(--border); color: var(--text-dim); }
 .seg-active   { background: var(--accent); border-color: var(--accent); color: #fff; }
 .rm-btn { flex-shrink: 0; background: transparent; border: none; color: var(--text-dim); font-size: 17px; line-height: 1; cursor: pointer; padding: 0 2px; transition: color .12s; }
@@ -924,7 +925,7 @@ class Panel {
   _storageKey(type) { return `logviewer-${this.panelId}-${type}`; }
   _saveFilters() {
     localStorage.setItem(this._storageKey('filters'),
-      JSON.stringify(this.filters.map(f => ({ pattern: f.pattern, mode: f.mode, ci: f.ci }))));
+      JSON.stringify(this.filters.map(f => ({ pattern: f.pattern, mode: f.mode, ci: f.ci, disabled: f.disabled }))));
   }
   _saveHighlights() {
     localStorage.setItem(this._storageKey('highlights'),
@@ -935,7 +936,7 @@ class Panel {
     if (sf) {
       try {
         for (const fd of JSON.parse(sf)) {
-          const f = { id: ++this._fseq, pattern: fd.pattern ?? '', mode: fd.mode ?? 'exclude', ci: fd.ci ?? true, regex: null, valid: true };
+          const f = { id: ++this._fseq, pattern: fd.pattern ?? '', mode: fd.mode ?? 'exclude', ci: fd.ci ?? true, disabled: fd.disabled ?? false, regex: null, valid: true };
           this._compileF(f); this.filters.push(f);
         }
         if (!this.filters.length) this._addFilter();
@@ -956,7 +957,7 @@ class Panel {
   }
 
   _addFilter() {
-    const f = { id: ++this._fseq, pattern: '', mode: 'exclude', ci: true, regex: null, valid: true };
+    const f = { id: ++this._fseq, pattern: '', mode: 'exclude', ci: true, disabled: false, regex: null, valid: true };
     this.filters.push(f);
     this._renderFList();
     this._updateFBadge();
@@ -992,6 +993,18 @@ class Panel {
     }
     this._applyFilters(); this._saveFilters();
   }
+  _toggleFDisabled(id) {
+    const f = this.filters.find(f => f.id === id); if (!f) return;
+    f.disabled = !f.disabled;
+    const row = this.elFList.querySelector(`[data-id="${id}"]`);
+    if (row) {
+      row.classList.toggle('f-row-disabled', f.disabled);
+      const btn = row.querySelector('.f-dis-btn');
+      btn.className = `seg-btn f-dis-btn ${f.disabled ? 'seg-neutral' : 'seg-active'}`;
+      btn.title = f.disabled ? 'Enable filter' : 'Disable filter';
+    }
+    this._applyFilters(); this._saveFilters();
+  }
   _renderFList() {
     // Preserve focus: remember which filter id had focus and cursor position
     const focused = this.elFList.querySelector('.filter-input:focus');
@@ -1001,7 +1014,14 @@ class Panel {
     this.elFList.innerHTML = '';
     for (const f of this.filters) {
       const row = document.createElement('div');
-      row.className = 'rule-row'; row.dataset.id = f.id;
+      row.className = 'rule-row' + (f.disabled ? ' f-row-disabled' : ''); row.dataset.id = f.id;
+
+      const disBtn = document.createElement('button');
+      disBtn.className = `seg-btn f-dis-btn ${f.disabled ? 'seg-neutral' : 'seg-active'}`;
+      disBtn.style.cssText = 'width:22px;padding:0;font-size:11px;flex-shrink:0;';
+      disBtn.textContent = '●';
+      disBtn.title = f.disabled ? 'Enable filter' : 'Disable filter';
+      disBtn.addEventListener('click', () => this._toggleFDisabled(f.id));
 
       const inp = document.createElement('input');
       inp.type = 'text'; inp.className = 'filter-input' + (f.valid ? '' : ' invalid');
@@ -1024,7 +1044,7 @@ class Panel {
       rm.className = 'rm-btn'; rm.textContent = '×';
       rm.addEventListener('click', () => this._removeFilter(f.id));
 
-      row.append(inp, modeBtn, ciBtn, rm);
+      row.append(disBtn, inp, modeBtn, ciBtn, rm);
       this.elFList.appendChild(row);
     }
 
@@ -1036,7 +1056,7 @@ class Panel {
   }
   _focusLast(list) { const inputs = list.querySelectorAll('.filter-input'); if (inputs.length) inputs[inputs.length - 1].focus(); }
   _updateFBadge() {
-    const n = this.filters.filter(f => f.regex && f.valid).length;
+    const n = this.filters.filter(f => f.regex && f.valid && !f.disabled).length;
     this.elFBadge.textContent = n; this.elFBadge.classList.toggle('show', n > 0);
   }
 
@@ -1054,8 +1074,8 @@ class Panel {
       anchorLine = (topRow.type === 'line' || topRow.type === 'fline') ? topRow.lineIdx : topRow.type === 'fsep' ? topRow.startLine : topRow.from;
     }
 
-    const incl = this.filters.filter(f => f.mode === 'include' && f.regex && f.valid);
-    const excl = this.filters.filter(f => f.mode === 'exclude' && f.regex && f.valid);
+    const incl = this.filters.filter(f => f.mode === 'include' && f.regex && f.valid && !f.disabled);
+    const excl = this.filters.filter(f => f.mode === 'exclude' && f.regex && f.valid && !f.disabled);
     const vis = new Set();
     for (let i = 0; i < this.allLines.length; i++) {
       const line = this.allLines[i];
@@ -1552,7 +1572,7 @@ class Panel {
 
   // ── Selection actions ─────────────────────────────────────
   _addFilterWithPattern(pattern, mode) {
-    const f = { id: ++this._fseq, pattern, mode, ci: false, regex: null, valid: true };
+    const f = { id: ++this._fseq, pattern, mode, ci: false, disabled: false, regex: null, valid: true };
     this._compileF(f);
     this.filters.push(f);
     this._renderFList();
