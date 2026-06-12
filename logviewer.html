@@ -118,7 +118,7 @@ body {
 
 /* ── Panel top bar ───────────────────────────── */
 .panel-head {
-  flex-shrink: 0;
+  flex-shrink: 0; position: relative;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   padding: 5px 8px;
@@ -126,6 +126,19 @@ body {
 }
 .ph-filename { flex: 1; min-width: 0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ph-filename.no-file { color: var(--text-dim); font-style: italic; }
+.ph-filename.expandable { cursor: pointer; color: var(--accent); }
+.ph-filename.expandable:hover { opacity: .8; }
+.ph-expand-arrow { font-size: 9px; margin-left: 3px; }
+.ph-fd-wrap {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 200;
+  background: var(--surface); border: 1px solid var(--border); border-top: none;
+  box-shadow: 0 6px 16px rgba(0,0,0,.35); display: none;
+}
+.ph-fd-wrap.open { display: block; }
+.ph-fd-item { display: flex; align-items: center; gap: 6px; padding: 3px 8px; font-size: 12px; }
+.ph-fd-item:hover { background: var(--hover-bg); }
+.ph-fd-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ph-fd-foot { padding: 4px 8px; border-top: 1px solid var(--border); }
 
 /* ── Search bar ──────────────────────────────── */
 .search-bar {
@@ -610,6 +623,7 @@ class Panel {
         <span class="ph-filename no-file">No file open</span>
         <button class="rm-btn js-close-first" style="display:none" title="Remove this file">×</button>
         <button class="tb-btn js-find-btn" title="Ctrl+F">Find</button>
+        <div class="ph-fd-wrap js-fd-wrap"></div>
         <button class="tb-btn js-open" title="Open log file(s) — replaces current view">Open</button>
         <button class="tb-btn js-add" style="display:none" title="Append additional log file(s) to current view">Add</button>
         <input type="file" class="js-fileinput" style="display:none" multiple>
@@ -679,6 +693,8 @@ class Panel {
     this.elName       = q('.ph-filename');
     this.elCloseFirst = q('.js-close-first');
     this.elAdd        = q('.js-add');
+    this.elFdWrap     = q('.js-fd-wrap');
+    this._fdOpen      = false;
     this.elFList     = q('.js-flist');
     this.elFStats    = q('.js-fstats');
     this.elFBadge    = q('.js-fbadge');
@@ -711,6 +727,9 @@ class Panel {
     q('.js-add').addEventListener('click', () => af.click());
     af.addEventListener('change', e => { if (e.target.files.length) this.appendFiles(e.target.files); e.target.value = ''; });
     q('.js-close-first').addEventListener('click', () => this.removeFile(0));
+    q('.ph-filename').addEventListener('click', () => { if (this.fileSegments.length > 1) this._toggleFileDropdown(); });
+    document.addEventListener('mousedown', e => { if (this._fdOpen && !this.root.contains(e.target)) this._closeFileDropdown(); });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && this._fdOpen) this._closeFileDropdown(); });
 
     // Filter panel
     q('.js-ftoggle').addEventListener('click', () => this._togglePanel('filter'));
@@ -1578,19 +1597,63 @@ class Panel {
 
   _updateFileHeader() {
     const hasFiles = this.fileSegments.length > 0;
+    const multi    = this.fileSegments.length > 1;
     this.elAdd.style.display        = hasFiles ? '' : 'none';
-    this.elCloseFirst.style.display = hasFiles ? '' : 'none';
+    this.elCloseFirst.style.display = (hasFiles && !multi) ? '' : 'none';
+    if (!multi) this._closeFileDropdown();
     if (!hasFiles) {
-      this.elName.textContent = 'No file open'; this.elName.title = ''; this.elName.classList.add('no-file'); return;
+      this.elName.textContent = 'No file open'; this.elName.title = ''; this.elName.classList.remove('expandable'); this.elName.classList.add('no-file'); return;
     }
     this.elName.classList.remove('no-file');
-    if (this.fileSegments.length === 1) {
+    if (!multi) {
       this.elName.textContent = this.fileSegments[0].name;
       this.elName.title = this.fileSegments[0].name;
+      this.elName.classList.remove('expandable');
     } else {
-      this.elName.textContent = this.fileSegments[0].name + ' +' + (this.fileSegments.length - 1) + ' more';
-      this.elName.title = this.fileSegments.map(s => s.name).join('\n');
+      this.elName.textContent = this.fileSegments[0].name + ' +' + (this.fileSegments.length - 1) + ' more ▾';
+      this.elName.title = 'Click to show all files';
+      this.elName.classList.add('expandable');
+      if (this._fdOpen) this._renderFileDropdown();
     }
+  }
+
+  _toggleFileDropdown() {
+    this._fdOpen = !this._fdOpen;
+    this.elFdWrap.classList.toggle('open', this._fdOpen);
+    if (this._fdOpen) this._renderFileDropdown();
+  }
+
+  _closeFileDropdown() {
+    this._fdOpen = false;
+    this.elFdWrap.classList.remove('open');
+  }
+
+  _renderFileDropdown() {
+    this.elFdWrap.innerHTML = '';
+    const list = document.createElement('div');
+    this.fileSegments.forEach((seg, i) => {
+      const item = document.createElement('div'); item.className = 'ph-fd-item';
+      const name = document.createElement('span'); name.className = 'ph-fd-name'; name.textContent = '📄 ' + seg.name; name.title = seg.name;
+      const rm   = document.createElement('button'); rm.className = 'rm-btn'; rm.textContent = '×'; rm.title = 'Remove this file';
+      rm.addEventListener('click', e => { e.stopPropagation(); this.removeFile(i); });
+      item.append(name, rm); list.appendChild(item);
+    });
+    const foot    = document.createElement('div'); foot.className = 'ph-fd-foot';
+    const clearBtn = document.createElement('button'); clearBtn.className = 'tb-btn'; clearBtn.textContent = 'Remove all';
+    clearBtn.addEventListener('click', () => this._clearAllFiles());
+    foot.appendChild(clearBtn);
+    this.elFdWrap.append(list, foot);
+  }
+
+  _clearAllFiles() {
+    this.allLines = []; this.fileSegments = [];
+    this.expandedKeys.clear(); this.displayRows = []; this.visibleSet = new Set();
+    this.elScroll.style.display = 'none'; this.elEmpty.style.display = '';
+    this._closeFileDropdown();
+    this._updateFileHeader();
+    this._updateFStats();
+    this.searchRe = null; this.searchMatches = []; this.searchCurIdx = -1;
+    this._updateSearchInfo();
   }
 
   onResize() { this._renderViewport(); }
