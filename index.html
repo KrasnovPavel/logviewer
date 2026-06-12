@@ -303,6 +303,39 @@ body {
 .col-cell.col-flex { flex: 1; min-width: 0; border-right: none; }
 .col-nomatch .ltext { color: var(--text-dim); }
 
+/* ── Column header ───────────────────────────── */
+.col-header {
+  position: absolute; top: 0; left: 0; right: 0; height: 20px;
+  overflow: hidden; z-index: 5;
+  background: var(--surface2); border-bottom: 1px solid var(--border);
+  user-select: none; display: none;
+}
+.col-header.show { display: block; }
+.ch-inner { display: flex; height: 100%; }
+.ch-lnum {
+  flex-shrink: 0; width: 58px; min-width: 58px;
+  padding: 0 9px 0 4px; margin-right: 10px;
+  border-right: 1px solid var(--lnum-sep);
+}
+.ch-cell {
+  position: relative; flex-shrink: 0; display: flex; align-items: center;
+  padding: 0 4px; font-size: 11px; font-weight: 600;
+  color: var(--text-dim); letter-spacing: .02em;
+  border-right: 1px solid var(--lnum-sep);
+  overflow: hidden; white-space: nowrap;
+  cursor: grab; height: 20px; line-height: 20px; box-sizing: border-box;
+}
+.ch-cell.col-flex { flex: 1; min-width: 0; border-right: none; cursor: default; }
+.ch-cell.ch-drag-over { box-shadow: inset 2px 0 0 var(--accent); }
+.ch-cell.ch-dragging  { opacity: 0.35; }
+.ch-label { overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+.ch-resize {
+  position: absolute; right: 0; top: 0; bottom: 0; width: 5px;
+  cursor: col-resize; z-index: 1; border-radius: 0 2px 2px 0;
+  transition: background .1s;
+}
+.ch-resize:hover { background: var(--accent); opacity: .6; }
+
 /* ── Column config ───────────────────────────── */
 .col-top-row { display: flex; align-items: center; gap: 10px; padding-bottom: 4px; }
 .col-enable-label { display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer; }
@@ -607,6 +640,7 @@ class Panel {
     this.searchMatches= [];
     this.searchCurIdx = -1;
     this._colOpen     = false;
+    this._dragColSrc  = null;
     this.fileSegments = [];
     this.colEnabled   = false;
     this.colPattern   = DEFAULT_COL_PATTERN;
@@ -643,6 +677,7 @@ class Panel {
         <button class="search-close js-search-close">×</button>
       </div>
       <div class="panel-log js-logarea">
+        <div class="col-header js-col-header"><div class="ch-inner js-ch-inner"></div></div>
         <div class="drop-overlay js-overlay">
           <div class="drop-box"><div class="drop-icon">📂</div><div>Drop log file here</div></div>
         </div>
@@ -721,6 +756,8 @@ class Panel {
     this.elColRegex  = q('.js-col-regex');
     this.elColList   = q('.js-col-list');
     this.elColBadge  = q('.js-colbadge');
+    this.elColHeader = q('.js-col-header');
+    this.elChInner   = q('.js-ch-inner');
     this.elSearchBar    = q('.js-search-bar');
     this.elSearchInput  = q('.js-search-input');
     this.elSearchInfo   = q('.js-search-info');
@@ -767,6 +804,8 @@ class Panel {
     // Scroll
     this.elScroll.addEventListener('scroll', () => {
       this._renderViewport();
+      if (this.elColHeader.classList.contains('show'))
+        this.elChInner.style.transform = `translateX(-${this.elScroll.scrollLeft}px)`;
       if (gSyncEnabled && !_syncLock && this.otherPanel) {
         _syncLock = true;
         this.otherPanel.elScroll.scrollTop = this.elScroll.scrollTop;
@@ -793,8 +832,8 @@ class Panel {
 
     // Drop
     const area = q('.js-logarea');
-    area.addEventListener('dragenter', e => { e.preventDefault(); e.stopPropagation(); if (++this._dragDepth === 1) this.elOverlay.classList.add('show'); });
-    area.addEventListener('dragleave', () => { if (--this._dragDepth === 0) this.elOverlay.classList.remove('show'); });
+    area.addEventListener('dragenter', e => { e.preventDefault(); e.stopPropagation(); if (!e.dataTransfer.types.includes('Files')) return; if (++this._dragDepth === 1) this.elOverlay.classList.add('show'); });
+    area.addEventListener('dragleave', () => { if (this._dragDepth > 0 && --this._dragDepth === 0) this.elOverlay.classList.remove('show'); });
     area.addEventListener('dragover', e => { e.preventDefault(); e.stopPropagation(); });
     area.addEventListener('drop', e => {
       e.preventDefault(); e.stopPropagation();
@@ -1367,6 +1406,7 @@ class Panel {
     this.colEnabled = on;
     this._updateColBadge();
     this._saveColumns();
+    this._renderColHeader();
     this._renderViewport();
   }
   _setColWidth(name, width) {
@@ -1424,6 +1464,7 @@ class Panel {
       row.append(visBtn, nameEl, infoEl);
       this.elColList.appendChild(row);
     }
+    this._renderColHeader();
   }
   _updateColBadge() {
     const on = this.colEnabled && this.colValid && this.columns.length > 0;
@@ -1660,6 +1701,103 @@ class Panel {
     this._updateFStats();
     this.searchRe = null; this.searchMatches = []; this.searchCurIdx = -1;
     this._updateSearchInfo();
+  }
+
+  // ── Column header (resize + reorder) ──────────────────────────
+  _renderColHeader() {
+    const colsOn = this.colEnabled && this.colValid && this.columns.length;
+    const jsonOn  = this.jsonMode && this.jsonColumns.length;
+    const active  = !!(colsOn || jsonOn);
+
+    this.elColHeader.classList.toggle('show', active);
+    this.elScroll.style.top = active ? '20px' : '';
+    this.elChInner.style.transform = `translateX(-${this.elScroll.scrollLeft}px)`;
+    this.elChInner.innerHTML = '';
+    if (!active) return;
+
+    const arr         = jsonOn ? this.jsonColumns : this.columns;
+    const displayCols = jsonOn ? arr : arr.filter(c => c.visible);
+
+    const lnum = document.createElement('div');
+    lnum.className = 'ch-lnum';
+    this.elChInner.appendChild(lnum);
+
+    for (let di = 0; di < displayCols.length; di++) {
+      const col    = displayCols[di];
+      const isLast = di === displayCols.length - 1;
+
+      const cell = document.createElement('div');
+      cell.className = 'ch-cell' + (isLast ? ' col-flex' : '');
+      if (!isLast) cell.style.width = col.width + 'px';
+
+      const lbl = document.createElement('span');
+      lbl.className = 'ch-label';
+      lbl.textContent = col.name;
+      cell.appendChild(lbl);
+
+      // Resize handle (not on last column)
+      if (!isLast) {
+        const handle = document.createElement('div');
+        handle.className = 'ch-resize';
+        handle.addEventListener('mousedown', e => {
+          e.preventDefault(); e.stopPropagation();
+          const startX = e.clientX;
+          const startW = col.width;
+          const onMove = ev => {
+            col.width = Math.max(20, startW + ev.clientX - startX);
+            cell.style.width = col.width + 'px';
+            this._saveColumns();
+            this._renderViewport();
+          };
+          const onUp = () => {
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+            this._renderColList();
+          };
+          document.addEventListener('mousemove', onMove);
+          document.addEventListener('mouseup', onUp);
+        });
+        cell.appendChild(handle);
+      }
+
+      // Drag to reorder
+      cell.setAttribute('draggable', 'true');
+      cell.addEventListener('dragstart', e => {
+        this._dragColSrc = col.name;
+        cell.classList.add('ch-dragging');
+        e.dataTransfer.effectAllowed = 'move';
+      });
+      cell.addEventListener('dragend', () => {
+        this._dragColSrc = null;
+        cell.classList.remove('ch-dragging');
+      });
+      cell.addEventListener('dragover', e => {
+        if (!this._dragColSrc || this._dragColSrc === col.name) return;
+        e.preventDefault(); e.dataTransfer.dropEffect = 'move';
+        cell.classList.add('ch-drag-over');
+      });
+      cell.addEventListener('dragleave', () => cell.classList.remove('ch-drag-over'));
+      cell.addEventListener('drop', e => {
+        e.preventDefault(); cell.classList.remove('ch-drag-over');
+        if (!this._dragColSrc || this._dragColSrc === col.name) return;
+        this._moveCol(arr, this._dragColSrc, col.name);
+        this._dragColSrc = null;
+        this._saveColumns();
+        this._renderColList();
+        this._renderColHeader();
+        this._renderViewport();
+      });
+
+      this.elChInner.appendChild(cell);
+    }
+  }
+
+  _moveCol(arr, srcName, dstName) {
+    const si = arr.findIndex(c => c.name === srcName);
+    const di = arr.findIndex(c => c.name === dstName);
+    if (si === -1 || di === -1 || si === di) return;
+    const [col] = arr.splice(si, 1);
+    arr.splice(di, 0, col);
   }
 
   onResize() { this._renderViewport(); }
