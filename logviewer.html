@@ -322,6 +322,21 @@ body {
 .sync-status { font-size: 10px; color: var(--text-dim); white-space: nowrap; }
 .sync-ph { border-top: 1px dashed var(--border); opacity: 0.35; height: 20px; min-width: 100%; }
 
+/* ── File separator ──────────────────────────────── */
+.log-fsep {
+  display: flex; align-items: center; height: 20px;
+  background: var(--surface2);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap; user-select: none; min-width: 100%;
+}
+.fsep-icon {
+  display: inline-block; width: 58px; min-width: 58px; text-align: right;
+  padding: 0 9px 0 4px; border-right: 1px solid var(--lnum-sep); margin-right: 10px;
+  font-size: 10px; color: var(--text-dim); flex-shrink: 0;
+}
+.fsep-label { font-size: 11px; color: var(--accent); font-weight: 600; }
+
 /* ── Selection popup ─────────────────────────── */
 .sel-popup {
   position: fixed;
@@ -572,6 +587,7 @@ class Panel {
     this.searchMatches= [];
     this.searchCurIdx = -1;
     this._colOpen     = false;
+    this.fileSegments = [];
     this.colEnabled   = false;
     this.colPattern   = DEFAULT_COL_PATTERN;
     this.colValid     = false;
@@ -592,8 +608,10 @@ class Panel {
       <div class="panel-head">
         <span class="ph-filename no-file">No file open</span>
         <button class="tb-btn js-find-btn" title="Ctrl+F">Find</button>
-        <button class="tb-btn js-open">Open</button>
-        <input type="file" class="js-fileinput" style="display:none">
+        <button class="tb-btn js-open" title="Open log file(s) — replaces current view">Open</button>
+        <button class="tb-btn js-add" title="Append additional log file(s) to current view">Add</button>
+        <input type="file" class="js-fileinput" style="display:none" multiple>
+        <input type="file" class="js-addfileinput" style="display:none" multiple>
       </div>
       <div class="search-bar js-search-bar">
         <input class="search-input js-search-input" placeholder="find regex…" spellcheck="false">
@@ -681,10 +699,13 @@ class Panel {
     this.elSearchInput  = q('.js-search-input');
     this.elSearchInfo   = q('.js-search-info');
 
-    // File open
+    // File open / append
     const fi = q('.js-fileinput');
     q('.js-open').addEventListener('click', () => fi.click());
-    fi.addEventListener('change', e => { if (e.target.files[0]) this.loadFile(e.target.files[0]); e.target.value = ''; });
+    fi.addEventListener('change', e => { if (e.target.files.length) this.loadFiles(e.target.files); e.target.value = ''; });
+    const af = q('.js-addfileinput');
+    q('.js-add').addEventListener('click', () => af.click());
+    af.addEventListener('change', e => { if (e.target.files.length) this.appendFiles(e.target.files); e.target.value = ''; });
 
     // Filter panel
     q('.js-ftoggle').addEventListener('click', () => this._togglePanel('filter'));
@@ -748,7 +769,7 @@ class Panel {
     area.addEventListener('drop', e => {
       e.preventDefault(); e.stopPropagation();
       this._dragDepth = 0; this.elOverlay.classList.remove('show');
-      if (e.dataTransfer.files[0]) this.loadFile(e.dataTransfer.files[0]);
+      if (e.dataTransfer.files.length) this.loadFiles(e.dataTransfer.files);
     });
   }
 
@@ -961,7 +982,7 @@ class Panel {
       const topIdx = Math.floor(this.elScroll.scrollTop / LINE_H);
       const topRow = this.displayRows[Math.min(topIdx, this.displayRows.length - 1)];
       anchorOffset = this.elScroll.scrollTop % LINE_H;
-      anchorLine = (topRow.type === 'line' || topRow.type === 'fline') ? topRow.lineIdx : topRow.from;
+      anchorLine = (topRow.type === 'line' || topRow.type === 'fline') ? topRow.lineIdx : topRow.type === 'fsep' ? topRow.startLine : topRow.from;
     }
 
     const incl = this.filters.filter(f => f.mode === 'include' && f.regex && f.valid);
@@ -984,7 +1005,7 @@ class Panel {
       let newRow = 0;
       for (let r = 0; r < this.displayRows.length; r++) {
         const row = this.displayRows[r];
-        const rowStart = (row.type === 'line' || row.type === 'fline') ? row.lineIdx : row.from;
+        const rowStart = (row.type === 'line' || row.type === 'fline') ? row.lineIdx : row.type === 'fsep' ? row.startLine : row.from;
         if (rowStart >= anchorLine || ((row.type === 'coll' || row.type === 'chdr') && row.from <= anchorLine && anchorLine < row.to)) { newRow = r; break; }
       }
       this.elScroll.scrollTop = newRow * LINE_H + anchorOffset;
@@ -1121,10 +1142,14 @@ class Panel {
   // ── Display rows ──────────────────────────────────────────
   _buildRows() {
     const rows = []; let i = 0; const n = this.allLines.length;
+    const sepAt = new Map();
+    for (let fi = 1; fi < this.fileSegments.length; fi++)
+      sepAt.set(this.fileSegments[fi].startLine, this.fileSegments[fi].name);
     while (i < n) {
+      if (sepAt.has(i)) rows.push({ type: 'fsep', name: sepAt.get(i), startLine: i });
       if (this.visibleSet.has(i)) { rows.push({ type: 'line', lineIdx: i }); i++; }
       else {
-        let j = i; while (j < n && !this.visibleSet.has(j)) j++;
+        let j = i + 1; while (j < n && !this.visibleSet.has(j) && !sepAt.has(j)) j++;
         const key = `${i}:${j}`;
         if (this.expandedKeys.has(key)) {
           rows.push({ type: 'chdr', from: i, to: j, count: j - i, key });
@@ -1161,6 +1186,14 @@ class Panel {
   _makeRow(row) {
     const div = document.createElement('div');
     div.style.height = LINE_H + 'px';
+
+    if (row.type === 'fsep') {
+      div.className = 'log-fsep';
+      const icon = document.createElement('span'); icon.className = 'fsep-icon'; icon.textContent = '···';
+      const lbl  = document.createElement('span'); lbl.className  = 'fsep-label'; lbl.textContent = '📄 ' + row.name;
+      div.appendChild(icon); div.appendChild(lbl);
+      return div;
+    }
 
     if (row.type === 'line' || row.type === 'fline') {
       const curLine = this.searchCurIdx >= 0 ? this.searchMatches[this.searchCurIdx] : -1;
@@ -1465,20 +1498,68 @@ class Panel {
     this._onSearchInput();
   }
 
-  // ── Load file ──────────────────────────────────────────────
-  loadFile(file) {
-    const reader = new FileReader();
-    reader.onload = e => {
-      this.allLines = e.target.result.split(/\r?\n/);
-      if (this.allLines[this.allLines.length - 1] === '') this.allLines.pop();
-      this.elName.textContent = file.name; this.elName.title = file.name; this.elName.classList.remove('no-file');
-      this.elEmpty.style.display = 'none'; this.elScroll.style.display = 'block';
-      this.elScroll.scrollTop = 0;
-      this.searchRe = null; this.searchMatches = []; this.searchCurIdx = -1;
-      if (this.elSearchInput.value) this._onSearchInput(); else this._updateSearchInfo();
-      this._applyFilters();
-    };
-    reader.readAsText(file);
+  // ── Load / append files ────────────────────────────────────
+  loadFile(file) { this.loadFiles([file]); }
+
+  loadFiles(fileList) {
+    const files = Array.from(fileList);
+    let pending = files.length;
+    const results = new Array(files.length);
+    files.forEach((file, idx) => {
+      const reader = new FileReader();
+      reader.onload = e => {
+        results[idx] = { name: file.name, text: e.target.result };
+        if (--pending === 0) {
+          this.allLines = []; this.fileSegments = [];
+          this._mergeFiles(results);
+        }
+      };
+      reader.readAsText(file);
+    });
+  }
+
+  appendFiles(fileList) {
+    const files = Array.from(fileList);
+    let pending = files.length;
+    const results = new Array(files.length);
+    files.forEach((file, idx) => {
+      const reader = new FileReader();
+      reader.onload = e => {
+        results[idx] = { name: file.name, text: e.target.result };
+        if (--pending === 0) this._mergeFiles(results);
+      };
+      reader.readAsText(file);
+    });
+  }
+
+  _mergeFiles(results) {
+    for (const { name, text } of results) {
+      const startLine = this.allLines.length;
+      const lines = text.split(/\r?\n/);
+      if (lines[lines.length - 1] === '') lines.pop();
+      for (const l of lines) this.allLines.push(l);
+      this.fileSegments.push({ name, startLine, endLine: this.allLines.length });
+    }
+    this._updateFileHeader();
+    this.elEmpty.style.display = 'none'; this.elScroll.style.display = 'block';
+    this.elScroll.scrollTop = 0;
+    this.searchRe = null; this.searchMatches = []; this.searchCurIdx = -1;
+    if (this.elSearchInput.value) this._onSearchInput(); else this._updateSearchInfo();
+    this._applyFilters();
+  }
+
+  _updateFileHeader() {
+    if (!this.fileSegments.length) {
+      this.elName.textContent = 'No file open'; this.elName.title = ''; this.elName.classList.add('no-file'); return;
+    }
+    this.elName.classList.remove('no-file');
+    if (this.fileSegments.length === 1) {
+      this.elName.textContent = this.fileSegments[0].name;
+      this.elName.title = this.fileSegments[0].name;
+    } else {
+      this.elName.textContent = this.fileSegments[0].name + ' +' + (this.fileSegments.length - 1) + ' more';
+      this.elName.title = this.fileSegments.map(s => s.name).join('\n');
+    }
   }
 
   onResize() { this._renderViewport(); }
