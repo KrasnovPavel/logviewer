@@ -91,6 +91,8 @@ body {
   user-select: none;
 }
 .app-title { font-size: 11px; font-weight: 700; letter-spacing: .12em; color: var(--text-dim); }
+.gh-link { font-size: 11px; color: var(--text-dim); text-decoration: none; opacity: .6; transition: opacity .12s; }
+.gh-link:hover { opacity: 1; }
 .flex1 { flex: 1; }
 .tb-btn {
   background: var(--surface2);
@@ -394,6 +396,7 @@ body {
 
 <div class="app-header">
   <span class="app-title">LOG VIEWER</span>
+  <a class="gh-link" href="https://github.com/KrasnovPavel/logviewer" target="_blank" title="View on GitHub">⌥ GitHub</a>
   <span class="flex1"></span>
   <button id="syncToggleBtn" class="tb-btn">⇄ Sync</button>
   <button id="exportBtn" class="tb-btn" title="Save all filters, highlights, columns, and sync settings to a file">Export settings</button>
