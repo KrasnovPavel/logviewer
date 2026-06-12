@@ -336,6 +336,7 @@ body {
   font-size: 10px; color: var(--text-dim); flex-shrink: 0;
 }
 .fsep-label { font-size: 11px; color: var(--accent); font-weight: 600; }
+.fsep-rm { margin-left: auto; margin-right: 6px; flex-shrink: 0; }
 
 /* ── Selection popup ─────────────────────────── */
 .sel-popup {
@@ -607,9 +608,10 @@ class Panel {
     this.root.innerHTML = `
       <div class="panel-head">
         <span class="ph-filename no-file">No file open</span>
+        <button class="rm-btn js-close-first" style="display:none" title="Remove this file">×</button>
         <button class="tb-btn js-find-btn" title="Ctrl+F">Find</button>
         <button class="tb-btn js-open" title="Open log file(s) — replaces current view">Open</button>
-        <button class="tb-btn js-add" title="Append additional log file(s) to current view">Add</button>
+        <button class="tb-btn js-add" style="display:none" title="Append additional log file(s) to current view">Add</button>
         <input type="file" class="js-fileinput" style="display:none" multiple>
         <input type="file" class="js-addfileinput" style="display:none" multiple>
       </div>
@@ -674,7 +676,9 @@ class Panel {
     `;
 
     const q = s => this.root.querySelector(s);
-    this.elName      = q('.ph-filename');
+    this.elName       = q('.ph-filename');
+    this.elCloseFirst = q('.js-close-first');
+    this.elAdd        = q('.js-add');
     this.elFList     = q('.js-flist');
     this.elFStats    = q('.js-fstats');
     this.elFBadge    = q('.js-fbadge');
@@ -699,13 +703,14 @@ class Panel {
     this.elSearchInput  = q('.js-search-input');
     this.elSearchInfo   = q('.js-search-info');
 
-    // File open / append
+    // File open / append / close
     const fi = q('.js-fileinput');
     q('.js-open').addEventListener('click', () => fi.click());
     fi.addEventListener('change', e => { if (e.target.files.length) this.loadFiles(e.target.files); e.target.value = ''; });
     const af = q('.js-addfileinput');
     q('.js-add').addEventListener('click', () => af.click());
     af.addEventListener('change', e => { if (e.target.files.length) this.appendFiles(e.target.files); e.target.value = ''; });
+    q('.js-close-first').addEventListener('click', () => this.removeFile(0));
 
     // Filter panel
     q('.js-ftoggle').addEventListener('click', () => this._togglePanel('filter'));
@@ -1144,9 +1149,9 @@ class Panel {
     const rows = []; let i = 0; const n = this.allLines.length;
     const sepAt = new Map();
     for (let fi = 1; fi < this.fileSegments.length; fi++)
-      sepAt.set(this.fileSegments[fi].startLine, this.fileSegments[fi].name);
+      sepAt.set(this.fileSegments[fi].startLine, { name: this.fileSegments[fi].name, segIdx: fi });
     while (i < n) {
-      if (sepAt.has(i)) rows.push({ type: 'fsep', name: sepAt.get(i), startLine: i });
+      if (sepAt.has(i)) { const s = sepAt.get(i); rows.push({ type: 'fsep', name: s.name, startLine: i, segIdx: s.segIdx }); }
       if (this.visibleSet.has(i)) { rows.push({ type: 'line', lineIdx: i }); i++; }
       else {
         let j = i + 1; while (j < n && !this.visibleSet.has(j) && !sepAt.has(j)) j++;
@@ -1191,7 +1196,9 @@ class Panel {
       div.className = 'log-fsep';
       const icon = document.createElement('span'); icon.className = 'fsep-icon'; icon.textContent = '···';
       const lbl  = document.createElement('span'); lbl.className  = 'fsep-label'; lbl.textContent = '📄 ' + row.name;
-      div.appendChild(icon); div.appendChild(lbl);
+      const rm   = document.createElement('button'); rm.className = 'rm-btn fsep-rm'; rm.textContent = '×'; rm.title = 'Remove this file';
+      rm.addEventListener('click', e => { e.stopPropagation(); this.removeFile(row.segIdx); });
+      div.appendChild(icon); div.appendChild(lbl); div.appendChild(rm);
       return div;
     }
 
@@ -1499,6 +1506,27 @@ class Panel {
   }
 
   // ── Load / append files ────────────────────────────────────
+  removeFile(segIdx) {
+    const seg = this.fileSegments[segIdx]; if (!seg) return;
+    const count = seg.endLine - seg.startLine;
+    this.allLines.splice(seg.startLine, count);
+    this.fileSegments.splice(segIdx, 1);
+    for (let i = segIdx; i < this.fileSegments.length; i++) {
+      this.fileSegments[i].startLine -= count;
+      this.fileSegments[i].endLine   -= count;
+    }
+    this._updateFileHeader();
+    if (!this.fileSegments.length) {
+      this.expandedKeys.clear(); this.displayRows = []; this.visibleSet = new Set();
+      this.elScroll.style.display = 'none'; this.elEmpty.style.display = '';
+      this._updateFStats(); return;
+    }
+    this.elScroll.scrollTop = 0;
+    this.searchRe = null; this.searchMatches = []; this.searchCurIdx = -1;
+    if (this.elSearchInput.value) this._onSearchInput(); else this._updateSearchInfo();
+    this._applyFilters();
+  }
+
   loadFile(file) { this.loadFiles([file]); }
 
   loadFiles(fileList) {
@@ -1549,7 +1577,10 @@ class Panel {
   }
 
   _updateFileHeader() {
-    if (!this.fileSegments.length) {
+    const hasFiles = this.fileSegments.length > 0;
+    this.elAdd.style.display        = hasFiles ? '' : 'none';
+    this.elCloseFirst.style.display = hasFiles ? '' : 'none';
+    if (!hasFiles) {
       this.elName.textContent = 'No file open'; this.elName.title = ''; this.elName.classList.add('no-file'); return;
     }
     this.elName.classList.remove('no-file');
