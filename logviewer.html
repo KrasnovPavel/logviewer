@@ -1,0 +1,1670 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Log Viewer</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:          #1a1a1a;
+  --surface:     #252526;
+  --surface2:    #2d2d30;
+  --border:      #3c3c3c;
+  --text:        #cccccc;
+  --text-dim:    #606060;
+  --accent:      #4ec9b0;
+  --incl-bg:     rgba(78,201,176,.12);
+  --incl-border: #4ec9b0;
+  --incl-fg:     #4ec9b0;
+  --excl-bg:     rgba(244,135,113,.12);
+  --excl-border: #f48771;
+  --excl-fg:     #f48771;
+  --lnum-fg:     #444;
+  --lnum-sep:    #2e2e2e;
+  --search-hit-bg:  rgba(255,140,0,.35);
+  --search-cur-bg:  #e8a020;
+  --search-cur-fg:  #000;
+  --hover-bg:    rgba(255,255,255,.04);
+  --coll-bg:     rgba(255,255,255,.025);
+  --fline-bg:    rgba(255,255,255,.06);
+  --fline-bar:   rgba(78,201,176,.35);
+  --cur-line-bg: rgba(232,160,32,.1);
+  --drop-shade:  rgba(0,0,0,.8);
+  --scrollbar:   #3a3a3a;
+  --split-bg:    #111;
+  --invalid:     #e57373;
+}
+
+[data-theme="light"] {
+  --bg:          #efefef;
+  --surface:     #ffffff;
+  --surface2:    #f5f5f5;
+  --border:      #dcdcdc;
+  --text:        #1a1a1a;
+  --text-dim:    #aaa;
+  --accent:      #0066cc;
+  --incl-bg:     rgba(0,120,60,.08);
+  --incl-border: #2e7d32;
+  --incl-fg:     #2e7d32;
+  --excl-bg:     rgba(180,0,0,.07);
+  --excl-border: #c62828;
+  --excl-fg:     #c62828;
+  --lnum-fg:     #c8c8c8;
+  --lnum-sep:    #e4e4e4;
+  --search-hit-bg:  rgba(255,140,0,.3);
+  --search-cur-bg:  #e8a020;
+  --search-cur-fg:  #fff;
+  --hover-bg:    rgba(0,0,0,.04);
+  --coll-bg:     rgba(0,0,0,.03);
+  --fline-bg:    rgba(0,0,0,.055);
+  --fline-bar:   rgba(0,100,200,.3);
+  --cur-line-bg: rgba(232,160,32,.14);
+  --drop-shade:  rgba(0,0,0,.5);
+  --scrollbar:   #ccc;
+  --split-bg:    #dcdcdc;
+  --invalid:     #c62828;
+}
+
+html, body { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Cascadia Code','Fira Code','Consolas','Monaco','Courier New',monospace;
+  font-size: 13px;
+  line-height: 20px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── App header ─────────────────────────────── */
+.app-header {
+  flex-shrink: 0;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 5px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  user-select: none;
+}
+.app-title { font-size: 11px; font-weight: 700; letter-spacing: .12em; color: var(--text-dim); }
+.flex1 { flex: 1; }
+.tb-btn {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 3px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color .12s;
+  flex-shrink: 0;
+}
+.tb-btn:hover { border-color: var(--accent); }
+
+/* ── Panels ──────────────────────────────────── */
+.panels-wrap { flex: 1; display: flex; min-height: 0; overflow: hidden; }
+.panel       { flex: 1; min-width: 100px; display: flex; flex-direction: column; overflow: hidden; }
+.panel-splitter {
+  width: 4px; background: var(--split-bg); flex-shrink: 0; cursor: col-resize;
+  transition: background .15s;
+}
+.panel-splitter:hover, .panel-splitter.dragging { background: var(--accent); }
+
+/* ── Panel top bar ───────────────────────────── */
+.panel-head {
+  flex-shrink: 0;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 5px 8px;
+  display: flex; align-items: center; gap: 6px;
+}
+.ph-filename { flex: 1; min-width: 0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ph-filename.no-file { color: var(--text-dim); font-style: italic; }
+
+/* ── Search bar ──────────────────────────────── */
+.search-bar {
+  flex-shrink: 0;
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+  padding: 4px 8px;
+  display: none; align-items: center; gap: 5px;
+}
+.search-bar.open { display: flex; }
+.search-input {
+  flex: 1; min-width: 0; height: 24px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 4px;
+  color: var(--text); padding: 0 7px; font-family: inherit; font-size: 12px; outline: none;
+  transition: border-color .12s;
+}
+.search-input::placeholder { color: var(--text-dim); }
+.search-input:focus { border-color: var(--accent); }
+.search-input.invalid { border-color: var(--invalid); }
+.search-info { font-size: 11px; color: var(--text-dim); white-space: nowrap; min-width: 60px; text-align: right; }
+.search-info.no-match { color: var(--invalid); }
+.snav-btn {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 4px;
+  color: var(--text); width: 24px; height: 24px; font-size: 12px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: border-color .12s; flex-shrink: 0;
+}
+.snav-btn:hover { border-color: var(--accent); }
+.search-close { background: transparent; border: none; color: var(--text-dim); font-size: 17px; line-height: 1; cursor: pointer; padding: 0 2px; transition: color .12s; }
+.search-close:hover { color: var(--text); }
+
+/* ── Log area ────────────────────────────────── */
+.panel-log { flex: 1; position: relative; overflow: hidden; }
+.drop-overlay {
+  position: absolute; inset: 0; background: var(--drop-shade); z-index: 20;
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: none; opacity: 0; transition: opacity .1s;
+}
+.drop-overlay.show { opacity: 1; }
+.drop-box {
+  border: 2px dashed var(--accent); border-radius: 14px; padding: 36px 56px;
+  color: var(--accent); text-align: center; display: flex; flex-direction: column; align-items: center; gap: 10px; font-size: 15px;
+}
+.drop-icon { font-size: 40px; line-height: 1; }
+.empty-panel { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--text-dim); }
+.empty-icon  { font-size: 44px; opacity: .2; line-height: 1; }
+.empty-label { font-size: 13px; }
+.log-scroll  { position: absolute; inset: 0; overflow: auto; display: none; }
+.log-scroll::-webkit-scrollbar        { width: 8px; height: 8px; }
+.log-scroll::-webkit-scrollbar-track  { background: transparent; }
+.log-scroll::-webkit-scrollbar-thumb  { background: var(--scrollbar); border-radius: 4px; }
+.log-scroll::-webkit-scrollbar-corner { background: transparent; }
+.log-spacer { width: 1px; }
+.log-window { position: absolute; top: 0; left: 0; min-width: 100%; }
+
+/* ── Log lines ───────────────────────────────── */
+.log-line { display: flex; align-items: baseline; height: 20px; white-space: nowrap; min-width: 100%; }
+.log-line:hover       { background: var(--hover-bg); }
+.log-line.fline       { background: var(--fline-bg); border-left: 2px solid var(--fline-bar); }
+.log-line.fline:hover { background: var(--hover-bg); }
+.log-line.cur-line    { background: var(--cur-line-bg) !important; }
+.lnum {
+  display: inline-block; width: 58px; min-width: 58px; text-align: right;
+  padding: 0 9px 0 4px; color: var(--lnum-fg); font-size: 11px;
+  border-right: 1px solid var(--lnum-sep); margin-right: 10px;
+  user-select: none; flex-shrink: 0;
+}
+.ltext { white-space: pre; flex: 1; }
+.sh { background: var(--search-hit-bg); border-radius: 2px; padding: 0 1px; }
+.sc { background: var(--search-cur-bg); color: var(--search-cur-fg); border-radius: 2px; padding: 0 1px; font-weight: 600; }
+
+/* ── Collapse rows ───────────────────────────── */
+.log-collapse { display: flex; align-items: center; height: 20px; cursor: pointer; background: var(--coll-bg); white-space: nowrap; user-select: none; }
+.log-collapse:hover { background: var(--hover-bg); }
+.log-collapse.open  { border-top: 1px solid rgba(78,201,176,.18); }
+.lnum-dot {
+  display: inline-block; width: 58px; min-width: 58px; text-align: right;
+  padding: 0 9px 0 4px; border-right: 1px solid var(--lnum-sep); margin-right: 10px;
+  color: var(--text-dim); font-size: 10px; letter-spacing: .15em; user-select: none; flex-shrink: 0;
+}
+.coll-label { font-size: 11px; color: var(--text-dim); }
+.coll-count { font-weight: 600; }
+.coll-arrow { font-size: 10px; color: var(--accent); margin-left: 6px; }
+
+/* ── Shared bottom-panel styles ──────────────── */
+.bottom-panel {
+  flex-shrink: 0;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+.bp-body {
+  overflow: hidden;
+  max-height: 0;
+  transition: max-height .2s ease, padding .2s ease;
+  padding: 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.bp-body.open {
+  max-height: 300px;
+  padding: 6px 8px;
+  overflow-y: auto;
+}
+.bp-body.open::-webkit-scrollbar       { width: 4px; }
+.bp-body.open::-webkit-scrollbar-track { background: transparent; }
+.bp-body.open::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 2px; }
+.bp-foot { display: flex; align-items: center; padding-top: 2px; }
+.add-btn {
+  background: transparent; border: 1px dashed var(--border); border-radius: 4px;
+  color: var(--text-dim); padding: 2px 8px; font-size: 11px; font-family: inherit;
+  cursor: pointer; transition: border-color .12s, color .12s;
+}
+.add-btn:hover { border-color: var(--accent); color: var(--accent); }
+.bp-toggle {
+  display: flex; align-items: center; gap: 8px; padding: 5px 8px;
+  cursor: pointer; user-select: none; border-top: 1px solid var(--border);
+  transition: background .1s;
+}
+.bp-toggle:hover { background: var(--hover-bg); }
+.bp-label  { font-size: 11px; color: var(--text-dim); font-weight: 600; letter-spacing: .04em; }
+.bp-badge  { font-size: 10px; background: var(--accent); color: #fff; border-radius: 8px; padding: 0 5px; line-height: 16px; display: none; }
+.bp-badge.show { display: inline-block; }
+.bp-stats  { font-size: 11px; color: var(--text-dim); margin-left: 4px; }
+.bp-arrow  { margin-left: auto; font-size: 10px; color: var(--text-dim); transition: transform .2s; }
+.bp-toggle.open .bp-arrow { transform: rotate(180deg); }
+
+/* ── Filter / Highlight rows ─────────────────── */
+.rule-row { display: flex; align-items: center; gap: 4px; }
+.filter-input {
+  flex: 1; min-width: 0; height: 24px;
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 4px;
+  color: var(--text); padding: 0 7px; font-family: inherit; font-size: 12px; outline: none;
+  transition: border-color .12s;
+}
+.filter-input::placeholder { color: var(--text-dim); }
+.filter-input:focus { border-color: var(--accent); }
+.filter-input.invalid { border-color: var(--invalid); }
+.seg-btn {
+  flex-shrink: 0; height: 24px; padding: 0 8px; border-radius: 4px; border: 1px solid;
+  font-size: 11px; font-family: inherit; cursor: pointer; white-space: nowrap;
+}
+.mode-include { background: var(--incl-bg); border-color: var(--incl-border); color: var(--incl-fg); }
+.mode-exclude { background: var(--excl-bg); border-color: var(--excl-border); color: var(--excl-fg); }
+.seg-neutral  { background: var(--surface2); border-color: var(--border); color: var(--text-dim); }
+.seg-active   { background: var(--accent); border-color: var(--accent); color: #fff; }
+.rm-btn { flex-shrink: 0; background: transparent; border: none; color: var(--text-dim); font-size: 17px; line-height: 1; cursor: pointer; padding: 0 2px; transition: color .12s; }
+.rm-btn:hover { color: var(--excl-fg); }
+
+/* ── Column cells ────────────────────────────── */
+.col-cell {
+  overflow: hidden; white-space: pre; padding: 0 4px; flex-shrink: 0;
+  height: 20px; line-height: 20px;
+  border-right: 1px solid var(--lnum-sep);
+}
+.col-cell.col-flex { flex: 1; min-width: 0; border-right: none; }
+.col-nomatch .ltext { color: var(--text-dim); }
+
+/* ── Column config ───────────────────────────── */
+.col-top-row { display: flex; align-items: center; gap: 10px; padding-bottom: 4px; }
+.col-enable-label { display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer; }
+.col-enable-label input[type=checkbox] { cursor: pointer; }
+.col-row { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+.col-row-name { font-size: 12px; color: var(--accent); min-width: 90px; }
+.col-row-info { font-size: 11px; color: var(--text-dim); }
+.col-width-input {
+  width: 55px; height: 22px; background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 3px; color: var(--text); padding: 0 5px; font-family: inherit; font-size: 11px; outline: none;
+}
+.col-width-input:focus { border-color: var(--accent); }
+
+/* ── Sync bar ────────────────────────────────── */
+.sync-bar {
+  flex-shrink: 0; display: none;
+  background: var(--surface2); border-bottom: 1px solid var(--border);
+  padding: 5px 10px; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.sync-bar.show { display: flex; }
+.sync-group { display: flex; align-items: center; gap: 5px; }
+.sync-sep { color: var(--border); padding: 0 4px; }
+.sync-lbl { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+.sync-input {
+  height: 24px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 4px; color: var(--text); padding: 0 6px; font-family: inherit;
+  font-size: 11px; outline: none;
+}
+.sync-input:focus { border-color: var(--accent); }
+.sync-col  { width: 100px; }
+.sync-fmt  { width: 190px; }
+.sync-off  { width: 75px; text-align: right; }
+.sync-enable { display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer; }
+.sync-status { font-size: 10px; color: var(--text-dim); white-space: nowrap; }
+.sync-ph { border-top: 1px dashed var(--border); opacity: 0.35; height: 20px; min-width: 100%; }
+
+/* ── Selection popup ─────────────────────────── */
+.sel-popup {
+  position: fixed;
+  z-index: 500;
+  display: none;
+  align-items: center;
+  gap: 3px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  box-shadow: 0 4px 14px rgba(0,0,0,.45);
+  pointer-events: auto;
+}
+.sel-popup.show { display: flex; }
+.sel-action {
+  height: 26px; padding: 0 10px;
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 4px;
+  color: var(--text); font-size: 11px; font-family: inherit;
+  cursor: pointer; white-space: nowrap; transition: border-color .1s;
+}
+.sel-action:hover { border-color: var(--accent); color: var(--accent); }
+.sel-action.incl  { border-color: var(--incl-border); color: var(--incl-fg); }
+.sel-action.excl  { border-color: var(--excl-border); color: var(--excl-fg); }
+
+/* ── Color swatch ────────────────────────────── */
+.swatch-wrap {
+  position: relative; flex-shrink: 0; cursor: pointer;
+  width: 24px; height: 24px;
+}
+.swatch-dot {
+  display: block; width: 24px; height: 24px;
+  border-radius: 4px; border: 1px solid var(--border);
+}
+.swatch-wrap input[type=color] {
+  position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; padding: 0; border: none;
+}
+</style>
+</head>
+<body>
+
+<div class="app-header">
+  <span class="app-title">LOG VIEWER</span>
+  <span class="flex1"></span>
+  <button id="syncToggleBtn" class="tb-btn">⇄ Sync</button>
+  <button id="exportBtn" class="tb-btn" title="Save all filters, highlights, columns, and sync settings to a file">Export settings</button>
+  <button id="importBtn" class="tb-btn" title="Load settings from a previously exported file (reloads page)">Import settings</button>
+  <input type="file" id="importFile" accept=".json" style="display:none">
+  <button id="themeBtn" class="tb-btn">☀ Light</button>
+</div>
+
+<div class="sync-bar" id="syncBar">
+  <label class="sync-enable"><input type="checkbox" id="syncEnable"> Temporal sync</label>
+  <span class="sync-sep">│</span>
+  <span class="sync-group">
+    <span class="sync-lbl">L col</span>
+    <input class="sync-input sync-col" id="syncColA" placeholder="timestamp">
+    <span class="sync-lbl">fmt</span>
+    <input class="sync-input sync-fmt" id="syncFmtA" placeholder="YYYY-MM-DD HH:mm:ss,SSS">
+    <span class="sync-status" id="syncStatusA"></span>
+  </span>
+  <span class="sync-sep">│</span>
+  <span class="sync-group">
+    <span class="sync-lbl">offset</span>
+    <input class="sync-input sync-off" id="syncOffset" type="number" value="0">
+    <span class="sync-lbl">ms</span>
+  </span>
+  <span class="sync-sep">│</span>
+  <span class="sync-group">
+    <span class="sync-lbl">R col</span>
+    <input class="sync-input sync-col" id="syncColB" placeholder="timestamp">
+    <span class="sync-lbl">fmt</span>
+    <input class="sync-input sync-fmt" id="syncFmtB" placeholder="YYYY-MM-DD HH:mm:ss,SSS">
+    <span class="sync-status" id="syncStatusB"></span>
+  </span>
+</div>
+
+<div class="panels-wrap" id="panelsWrap">
+  <div class="panel" id="panelL"></div>
+  <div class="panel-splitter" id="splitter"></div>
+  <div class="panel" id="panelR"></div>
+</div>
+
+<script>
+'use strict';
+
+const LINE_H = 20;
+const BUFFER = 120;
+
+function esc(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Build highlighted HTML from a list of spans.
+// spans: [{s, e, priority, cls?, style?}]
+// Higher priority wins over lower priority at the same character position.
+function buildHighlightHtml(text, spans) {
+  if (!spans.length) return esc(text);
+  const n = text.length;
+  // spanAt[i] = index into spans of the winning span at char i, or -1
+  const spanAt = new Int16Array(n).fill(-1);
+  for (let si = 0; si < spans.length; si++) {
+    const { s, e, priority = 0 } = spans[si];
+    for (let c = Math.max(0, s); c < Math.min(e, n); c++) {
+      if (spanAt[c] === -1 || priority > (spans[spanAt[c]].priority || 0)) spanAt[c] = si;
+    }
+  }
+  const out = [];
+  let i = 0;
+  while (i < n) {
+    const si = spanAt[i];
+    if (si === -1) {
+      let j = i + 1;
+      while (j < n && spanAt[j] === -1) j++;
+      out.push(esc(text.slice(i, j)));
+      i = j;
+    } else {
+      let j = i + 1;
+      while (j < n && spanAt[j] === si) j++;
+      const { cls, style } = spans[si];
+      const a = (cls ? `class="${cls}"` : '') + (style ? ` style="${style}"` : '');
+      out.push(`<span ${a.trim()}>${esc(text.slice(i, j))}</span>`);
+      i = j;
+    }
+  }
+  return out.join('');
+}
+
+// Convert a #rrggbb hex color to rgba(...) with the given alpha.
+// Used so background highlights look correct on both dark and light themes.
+function hexToRgba(hex, alpha) {
+  const r = parseInt(hex.slice(1,3), 16);
+  const g = parseInt(hex.slice(3,5), 16);
+  const b = parseInt(hex.slice(5,7), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+// ── Temporal sync globals ─────────────────────────────────────
+let gSyncEnabled  = false;
+let gSyncOffsetMs = 0;
+let gSyncRows     = [];   // [{t, idxA, idxB}]  null = placeholder
+let _syncLock     = false;
+
+const DEFAULT_SYNC_FMT = 'YYYY-MM-DD HH:mm:ss,SSS';
+
+function buildTimestampParser(fmt) {
+  const RX = { YYYY:'(\\d{4})', MM:'(\\d{2})', DD:'(\\d{2})', HH:'(\\d{2})', mm:'(\\d{2})', ss:'(\\d{2})', SSS:'(\\d{1,3})' };
+  const TOKEN = /YYYY|MM|DD|HH|mm|ss|SSS/g;
+  const keys = [];
+  const rxStr = fmt.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(TOKEN, tok => { keys.push(tok); return RX[tok]; });
+  const re = new RegExp(rxStr);
+  return str => {
+    const m = str.match(re); if (!m) return null;
+    const v = {}; keys.forEach((k, i) => v[k] = parseInt(m[i + 1]));
+    return Date.UTC(v.YYYY ?? 1970, (v.MM ?? 1) - 1, v.DD ?? 1, v.HH ?? 0, v.mm ?? 0, v.ss ?? 0, v.SSS ?? 0);
+  };
+}
+
+function buildSyncRows(pA, pB, offsetMs) {
+  const grpA = new Map(), grpB = new Map();
+  for (const i of pA.visibleSet) {
+    const t = pA.syncTimestamps[i]; if (t == null) continue;
+    if (!grpA.has(t)) grpA.set(t, []); grpA.get(t).push(i);
+  }
+  for (const i of pB.visibleSet) {
+    const t = pB.syncTimestamps[i]; if (t == null) continue;
+    const adj = t + offsetMs;
+    if (!grpB.has(adj)) grpB.set(adj, []); grpB.get(adj).push(i);
+  }
+  const allT = [...new Set([...grpA.keys(), ...grpB.keys()])].sort((a, b) => a - b);
+  const rows = [];
+  for (const t of allT) {
+    const ia = grpA.get(t) ?? [], ib = grpB.get(t) ?? [];
+    for (let j = 0, len = Math.max(ia.length, ib.length); j < len; j++)
+      rows.push({ t, idxA: ia[j] ?? null, idxB: ib[j] ?? null });
+  }
+  return rows;
+}
+
+function saveGlobalSync() {
+  localStorage.setItem('logviewer-sync', JSON.stringify({ enabled: gSyncEnabled, offsetMs: gSyncOffsetMs }));
+}
+
+function rebuildSync() {
+  if (!gSyncEnabled) return;
+  // panels may not exist yet during initial load — guard with typeof
+  if (typeof panelL === 'undefined' || typeof panelR === 'undefined') return;
+  panelL._computeSyncTimestamps();
+  panelR._computeSyncTimestamps();
+  gSyncRows = buildSyncRows(panelL, panelR, gSyncOffsetMs);
+  const h = gSyncRows.length * LINE_H + 'px';
+  panelL.elSpacer.style.height = h;
+  panelR.elSpacer.style.height = h;
+  panelL._renderViewport();
+  panelR._renderViewport();
+  // Update status counters
+  const cntA = panelL.syncTimestamps.filter(t => t != null).length;
+  const cntB = panelR.syncTimestamps.filter(t => t != null).length;
+  const saEl = document.getElementById('syncStatusA');
+  const sbEl = document.getElementById('syncStatusB');
+  if (saEl) saEl.textContent = cntA ? `${cntA.toLocaleString()} ts` : 'no ts found';
+  if (sbEl) sbEl.textContent = cntB ? `${cntB.toLocaleString()} ts` : 'no ts found';
+}
+
+function sliceSpans(spans, start, end) {
+  const out = [];
+  for (const sp of spans) {
+    if (sp.e <= start || sp.s >= end) continue;
+    out.push({ ...sp, s: Math.max(0, sp.s - start), e: Math.min(end - start, sp.e - start) });
+  }
+  return out;
+}
+
+const DEFAULT_COL_PATTERN = '^(?<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2},\\d{3}) \\[(?<thread>[^\\]]*)\\] (?<level>\\S+\\s+-) (?<data>.*)$';
+const DEFAULT_COL_WIDTHS  = { timestamp: 195, thread: 50, level: 80 };
+
+// ci:true  → case-insensitive (gim flags)
+// ci:false → case-sensitive   (gm  flags)  — default for all level-prefix rules
+const DEFAULT_HIGHLIGHTS = [
+  { pattern: 'INFO  -',           scope: 'text', colorMode: 'bg', color: '#00bb44', ci: false },
+  { pattern: 'WARN  -',           scope: 'line', colorMode: 'bg', color: '#ffcc00', ci: false },
+  { pattern: 'ERROR -',           scope: 'line', colorMode: 'bg', color: '#ff4040', ci: false },
+  { pattern: '^ ',                scope: 'line', colorMode: 'bg', color: '#ff4040', ci: false },
+  { pattern: 'TRACE -|DEBUG -',   scope: 'line', colorMode: 'fg', color: '#777777', ci: false },
+  { pattern: 'warning',           scope: 'text', colorMode: 'fg', color: '#b87800', ci: true  },
+  { pattern: 'error',             scope: 'text', colorMode: 'fg', color: '#cc2222', ci: true  },
+];
+
+// ─── Panel ─────────────────────────────────────────────────────
+class Panel {
+  constructor(root, panelId) {
+    this.root         = root;
+    this.panelId      = panelId;
+    this.allLines     = [];
+    this.filters      = [];
+    this.highlights   = [];
+    this.visibleSet   = new Set();
+    this.expandedKeys = new Set();
+    this.displayRows  = [];
+    this._fseq        = 0;
+    this._hseq        = 0;
+    this._dragDepth   = 0;
+    this._filtersOpen = false;
+    this._hlOpen      = false;
+    this.searchRe     = null;
+    this.searchMatches= [];
+    this.searchCurIdx = -1;
+    this._colOpen     = false;
+    this.colEnabled   = false;
+    this.colPattern   = DEFAULT_COL_PATTERN;
+    this.colValid     = false;
+    this.colRegex     = null;
+    this.columns      = [];
+    this.syncSide       = 'A';
+    this.otherPanel     = null;
+    this.syncTimeCol    = 'timestamp';
+    this.syncTimeFmt    = DEFAULT_SYNC_FMT;
+    this.syncTimestamps = [];
+    this._buildDOM();
+    this._loadFromStorage();
+  }
+
+  // ── DOM ───────────────────────────────────────────────────
+  _buildDOM() {
+    this.root.innerHTML = `
+      <div class="panel-head">
+        <span class="ph-filename no-file">No file open</span>
+        <button class="tb-btn js-find-btn" title="Ctrl+F">Find</button>
+        <button class="tb-btn js-open">Open</button>
+        <input type="file" class="js-fileinput" style="display:none">
+      </div>
+      <div class="search-bar js-search-bar">
+        <input class="search-input js-search-input" placeholder="find regex…" spellcheck="false">
+        <span class="search-info js-search-info">—</span>
+        <button class="snav-btn js-prev" title="Shift+Enter">↑</button>
+        <button class="snav-btn js-next" title="Enter">↓</button>
+        <button class="search-close js-search-close">×</button>
+      </div>
+      <div class="panel-log js-logarea">
+        <div class="drop-overlay js-overlay">
+          <div class="drop-box"><div class="drop-icon">📂</div><div>Drop log file here</div></div>
+        </div>
+        <div class="empty-panel js-empty">
+          <div class="empty-icon">🗒</div><div class="empty-label">Drop a file or click Open</div>
+        </div>
+        <div class="log-scroll js-scroll">
+          <div class="log-spacer js-spacer"></div>
+          <div class="log-window js-window"></div>
+        </div>
+      </div>
+      <div class="bottom-panel">
+        <div class="bp-body js-filter-body">
+          <div class="js-flist"></div>
+          <div class="bp-foot"><button class="add-btn js-fadd">+ Add filter</button></div>
+        </div>
+        <div class="bp-toggle js-ftoggle">
+          <span class="bp-label">Filters</span>
+          <span class="bp-badge js-fbadge"></span>
+          <span class="bp-stats js-fstats"></span>
+          <span class="bp-arrow">▲</span>
+        </div>
+      </div>
+      <div class="bottom-panel">
+        <div class="bp-body js-hl-body">
+          <div class="js-hllist"></div>
+          <div class="bp-foot"><button class="add-btn js-hladd">+ Add highlight</button></div>
+        </div>
+        <div class="bp-toggle js-hltoggle">
+          <span class="bp-label">Highlights</span>
+          <span class="bp-badge js-hlbadge"></span>
+          <span class="bp-arrow">▲</span>
+        </div>
+      </div>
+      <div class="bottom-panel">
+        <div class="bp-body js-col-body">
+          <div class="col-top-row">
+            <label class="col-enable-label"><input type="checkbox" class="js-col-enable"> Enable columns</label>
+          </div>
+          <div class="rule-row" style="padding-bottom:4px">
+            <input class="filter-input js-col-regex" placeholder="regex with (?&lt;name&gt;…) named groups…" spellcheck="false">
+          </div>
+          <div class="js-col-list"></div>
+        </div>
+        <div class="bp-toggle js-coltoggle">
+          <span class="bp-label">Columns</span>
+          <span class="bp-badge js-colbadge"></span>
+          <span class="bp-arrow">▲</span>
+        </div>
+      </div>
+    `;
+
+    const q = s => this.root.querySelector(s);
+    this.elName      = q('.ph-filename');
+    this.elFList     = q('.js-flist');
+    this.elFStats    = q('.js-fstats');
+    this.elFBadge    = q('.js-fbadge');
+    this.elHlList    = q('.js-hllist');
+    this.elHlBadge   = q('.js-hlbadge');
+    this.elOverlay   = q('.js-overlay');
+    this.elEmpty     = q('.js-empty');
+    this.elScroll    = q('.js-scroll');
+    this.elSpacer    = q('.js-spacer');
+    this.elWindow    = q('.js-window');
+    this.elFBody     = q('.js-filter-body');
+    this.elFToggle   = q('.js-ftoggle');
+    this.elHlBody    = q('.js-hl-body');
+    this.elHlToggle  = q('.js-hltoggle');
+    this.elColBody   = q('.js-col-body');
+    this.elColToggle = q('.js-coltoggle');
+    this.elColEnable = q('.js-col-enable');
+    this.elColRegex  = q('.js-col-regex');
+    this.elColList   = q('.js-col-list');
+    this.elColBadge  = q('.js-colbadge');
+    this.elSearchBar    = q('.js-search-bar');
+    this.elSearchInput  = q('.js-search-input');
+    this.elSearchInfo   = q('.js-search-info');
+
+    // File open
+    const fi = q('.js-fileinput');
+    q('.js-open').addEventListener('click', () => fi.click());
+    fi.addEventListener('change', e => { if (e.target.files[0]) this.loadFile(e.target.files[0]); e.target.value = ''; });
+
+    // Filter panel
+    q('.js-ftoggle').addEventListener('click', () => this._togglePanel('filter'));
+    q('.js-fadd').addEventListener('click', () => this._addFilter());
+
+    // Highlight panel
+    q('.js-hltoggle').addEventListener('click', () => this._togglePanel('highlight'));
+    q('.js-hladd').addEventListener('click', () => this._addHighlight());
+
+    // Column panel
+    q('.js-coltoggle').addEventListener('click', () => this._togglePanel('column'));
+    q('.js-col-enable').addEventListener('change', e => this._toggleColEnabled(e.target.checked));
+    q('.js-col-regex').addEventListener('input', e => this._setColPattern(e.target.value));
+
+    // Search
+    q('.js-find-btn').addEventListener('click', () => this._openSearch());
+    q('.js-search-close').addEventListener('click', () => this._closeSearch());
+    q('.js-prev').addEventListener('click', () => this._searchNav(-1));
+    q('.js-next').addEventListener('click', () => this._searchNav(+1));
+    this.elSearchInput.addEventListener('input', () => this._onSearchInput());
+    this.elSearchInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); this._searchNav(e.shiftKey ? -1 : +1); }
+      if (e.key === 'Escape') this._closeSearch();
+    });
+    this.root.addEventListener('keydown', e => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f') { e.preventDefault(); this._openSearch(); }
+    });
+
+    // Scroll
+    this.elScroll.addEventListener('scroll', () => {
+      this._renderViewport();
+      if (gSyncEnabled && !_syncLock && this.otherPanel) {
+        _syncLock = true;
+        this.otherPanel.elScroll.scrollTop = this.elScroll.scrollTop;
+        this.otherPanel._renderViewport();
+        _syncLock = false;
+      }
+    }, { passive: true });
+
+    // Selection popup
+    this.elScroll.addEventListener('mouseup', () => {
+      // defer so selection is finalised
+      setTimeout(() => {
+        const sel = window.getSelection();
+        if (!sel || sel.rangeCount === 0) return;
+        const text = sel.toString();
+        const trimmed = text.trim();
+        if (!trimmed) return;
+        const range = sel.getRangeAt(0);
+        if (!this.root.contains(range.commonAncestorContainer)) return;
+        const rect = range.getBoundingClientRect();
+        showSelPopup(this, trimmed, rect.left + rect.width / 2, rect.top);
+      }, 0);
+    });
+
+    // Drop
+    const area = q('.js-logarea');
+    area.addEventListener('dragenter', e => { e.preventDefault(); e.stopPropagation(); if (++this._dragDepth === 1) this.elOverlay.classList.add('show'); });
+    area.addEventListener('dragleave', () => { if (--this._dragDepth === 0) this.elOverlay.classList.remove('show'); });
+    area.addEventListener('dragover', e => { e.preventDefault(); e.stopPropagation(); });
+    area.addEventListener('drop', e => {
+      e.preventDefault(); e.stopPropagation();
+      this._dragDepth = 0; this.elOverlay.classList.remove('show');
+      if (e.dataTransfer.files[0]) this.loadFile(e.dataTransfer.files[0]);
+    });
+  }
+
+  _togglePanel(which) {
+    if (which === 'filter') {
+      this._filtersOpen = !this._filtersOpen;
+      this.elFBody.classList.toggle('open', this._filtersOpen);
+      this.elFToggle.classList.toggle('open', this._filtersOpen);
+    } else if (which === 'highlight') {
+      this._hlOpen = !this._hlOpen;
+      this.elHlBody.classList.toggle('open', this._hlOpen);
+      this.elHlToggle.classList.toggle('open', this._hlOpen);
+    } else {
+      this._colOpen = !this._colOpen;
+      this.elColBody.classList.toggle('open', this._colOpen);
+      this.elColToggle.classList.toggle('open', this._colOpen);
+    }
+    requestAnimationFrame(() => this._renderViewport());
+  }
+
+  // ── Search ────────────────────────────────────────────────
+  _openSearch()  { this.elSearchBar.classList.add('open'); this.elSearchInput.focus(); this.elSearchInput.select(); }
+  _closeSearch() {
+    this.elSearchBar.classList.remove('open');
+    this.searchRe = null; this.searchMatches = []; this.searchCurIdx = -1;
+    this.elSearchInput.value = ''; this.elSearchInput.classList.remove('invalid');
+    this._renderViewport();
+  }
+  _onSearchInput() {
+    this.elSearchInput.classList.remove('invalid');
+    this.searchRe = null; this.searchMatches = []; this.searchCurIdx = -1;
+    const val = this.elSearchInput.value;
+    if (val.trim()) {
+      try   { this.searchRe = new RegExp(val, 'gi'); }
+      catch { this.elSearchInput.classList.add('invalid'); this._updateSearchInfo(); return; }
+      for (let i = 0; i < this.allLines.length; i++) {
+        this.searchRe.lastIndex = 0;
+        if (this.searchRe.test(this.allLines[i])) this.searchMatches.push(i);
+      }
+    }
+    this._updateSearchInfo();
+    this._renderViewport();
+  }
+  _searchNav(dir) {
+    if (!this.searchMatches.length) return;
+    const n = this.searchMatches.length;
+    this.searchCurIdx = ((this.searchCurIdx + dir) % n + n) % n;
+    this._scrollToLine(this.searchMatches[this.searchCurIdx]);
+    this._updateSearchInfo();
+    this._renderViewport();
+  }
+  _scrollToLine(lineIdx) {
+    let rowIdx = this.displayRows.findIndex(r => (r.type === 'line' || r.type === 'fline') && r.lineIdx === lineIdx);
+    if (rowIdx === -1) {
+      for (let r = 0; r < this.displayRows.length; r++) {
+        const row = this.displayRows[r];
+        if ((row.type === 'coll' || row.type === 'chdr') && row.from <= lineIdx && lineIdx < row.to) {
+          this.expandedKeys.add(row.key); this._buildRows(); this._updateSpacer();
+          rowIdx = this.displayRows.findIndex(r => (r.type === 'line' || r.type === 'fline') && r.lineIdx === lineIdx);
+          break;
+        }
+      }
+    }
+    if (rowIdx !== -1) {
+      const viewH = this.elScroll.clientHeight || 400;
+      this.elScroll.scrollTop = Math.max(0, rowIdx * LINE_H - viewH / 2 + LINE_H / 2);
+    }
+  }
+  _updateSearchInfo() {
+    const n = this.searchMatches.length;
+    if (!this.elSearchInput.value.trim()) { this.elSearchInfo.textContent = '—'; this.elSearchInfo.classList.remove('no-match'); }
+    else if (n === 0) { this.elSearchInfo.textContent = 'no match'; this.elSearchInfo.classList.add('no-match'); }
+    else { this.elSearchInfo.textContent = `${this.searchCurIdx + 1} / ${n}`; this.elSearchInfo.classList.remove('no-match'); }
+  }
+
+  // ── Filters ───────────────────────────────────────────────
+  _fFlags(f) { return f.ci ? 'gim' : 'gm'; }
+  _compileF(f) {
+    f.valid = true; f.regex = null;
+    if (f.pattern.trim()) { try { f.regex = new RegExp(f.pattern, this._fFlags(f)); } catch { f.valid = false; } }
+  }
+  // ── Persistence ───────────────────────────────────────────
+  _storageKey(type) { return `logviewer-${this.panelId}-${type}`; }
+  _saveFilters() {
+    localStorage.setItem(this._storageKey('filters'),
+      JSON.stringify(this.filters.map(f => ({ pattern: f.pattern, mode: f.mode, ci: f.ci }))));
+  }
+  _saveHighlights() {
+    localStorage.setItem(this._storageKey('highlights'),
+      JSON.stringify(this.highlights.map(h => ({ pattern: h.pattern, scope: h.scope, colorMode: h.colorMode, color: h.color, ci: h.ci }))));
+  }
+  _loadFromStorage() {
+    const sf = localStorage.getItem(this._storageKey('filters'));
+    if (sf) {
+      try {
+        for (const fd of JSON.parse(sf)) {
+          const f = { id: ++this._fseq, pattern: fd.pattern ?? '', mode: fd.mode ?? 'exclude', ci: fd.ci ?? true, regex: null, valid: true };
+          this._compileF(f); this.filters.push(f);
+        }
+        if (!this.filters.length) this._addFilter();
+        else { this._renderFList(); this._updateFBadge(); }
+      } catch { this._addFilter(); }
+    } else {
+      this._addFilter();
+    }
+    const sh = localStorage.getItem(this._storageKey('highlights'));
+    if (sh) {
+      try { for (const hd of JSON.parse(sh)) this._addHighlight(hd); }
+      catch { for (const d of DEFAULT_HIGHLIGHTS) this._addHighlight(d); }
+    } else {
+      for (const d of DEFAULT_HIGHLIGHTS) this._addHighlight(d);
+    }
+    this._loadColumns();
+    this._loadSyncCfg();
+  }
+
+  _addFilter() {
+    const f = { id: ++this._fseq, pattern: '', mode: 'exclude', ci: true, regex: null, valid: true };
+    this.filters.push(f);
+    this._renderFList();
+    this._updateFBadge();
+    this._saveFilters();
+  }
+  _removeFilter(id) { this.filters = this.filters.filter(f => f.id !== id); this._renderFList(); this._applyFilters(); this._saveFilters(); }
+  _setFPattern(id, pattern) {
+    const f = this.filters.find(f => f.id === id); if (!f) return;
+    f.pattern = pattern; this._compileF(f);
+    const row = this.elFList.querySelector(`[data-id="${id}"]`);
+    if (row) row.querySelector('.filter-input').classList.toggle('invalid', !f.valid);
+    this._applyFilters(); this._saveFilters();
+  }
+  _toggleFMode(id) {
+    const f = this.filters.find(f => f.id === id); if (!f) return;
+    f.mode = f.mode === 'include' ? 'exclude' : 'include';
+    const row = this.elFList.querySelector(`[data-id="${id}"]`);
+    if (row) {
+      const btn = row.querySelector('.f-mode-btn');
+      btn.className = `seg-btn f-mode-btn ${f.mode === 'include' ? 'mode-include' : 'mode-exclude'}`;
+      btn.textContent = f.mode === 'include' ? '+ Include' : '− Exclude';
+    }
+    this._applyFilters(); this._saveFilters();
+  }
+  _toggleFCi(id) {
+    const f = this.filters.find(f => f.id === id); if (!f) return;
+    f.ci = !f.ci; this._compileF(f);
+    const row = this.elFList.querySelector(`[data-id="${id}"]`);
+    if (row) {
+      const btn = row.querySelector('.f-ci-btn');
+      btn.className = `seg-btn f-ci-btn ${f.ci ? 'seg-neutral' : 'seg-active'}`;
+      btn.title = f.ci ? 'Case-insensitive (click to make sensitive)' : 'Case-sensitive (click to make insensitive)';
+    }
+    this._applyFilters(); this._saveFilters();
+  }
+  _renderFList() {
+    // Preserve focus: remember which filter id had focus and cursor position
+    const focused = this.elFList.querySelector('.filter-input:focus');
+    const focusedId = focused ? +focused.closest('[data-id]').dataset.id : null;
+    const focusedSel = focused ? [focused.selectionStart, focused.selectionEnd] : null;
+
+    this.elFList.innerHTML = '';
+    for (const f of this.filters) {
+      const row = document.createElement('div');
+      row.className = 'rule-row'; row.dataset.id = f.id;
+
+      const inp = document.createElement('input');
+      inp.type = 'text'; inp.className = 'filter-input' + (f.valid ? '' : ' invalid');
+      inp.placeholder = 'regex…  e.g.  error|warn'; inp.value = f.pattern;
+      inp.addEventListener('input', e => this._setFPattern(f.id, e.target.value));
+      inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); this._addFilter(); this._focusLast(this.elFList); } });
+
+      const modeBtn = document.createElement('button');
+      modeBtn.className = `seg-btn f-mode-btn ${f.mode === 'include' ? 'mode-include' : 'mode-exclude'}`;
+      modeBtn.textContent = f.mode === 'include' ? '+ Include' : '− Exclude';
+      modeBtn.addEventListener('click', () => this._toggleFMode(f.id));
+
+      const ciBtn = document.createElement('button');
+      ciBtn.className = `seg-btn f-ci-btn ${f.ci ? 'seg-neutral' : 'seg-active'}`;
+      ciBtn.textContent = 'Aa';
+      ciBtn.title = f.ci ? 'Case-insensitive (click to make sensitive)' : 'Case-sensitive (click to make insensitive)';
+      ciBtn.addEventListener('click', () => this._toggleFCi(f.id));
+
+      const rm = document.createElement('button');
+      rm.className = 'rm-btn'; rm.textContent = '×';
+      rm.addEventListener('click', () => this._removeFilter(f.id));
+
+      row.append(inp, modeBtn, ciBtn, rm);
+      this.elFList.appendChild(row);
+    }
+
+    // Restore focus and cursor position
+    if (focusedId !== null) {
+      const target = this.elFList.querySelector(`[data-id="${focusedId}"] .filter-input`);
+      if (target) { target.focus(); if (focusedSel) target.setSelectionRange(focusedSel[0], focusedSel[1]); }
+    }
+  }
+  _focusLast(list) { const inputs = list.querySelectorAll('.filter-input'); if (inputs.length) inputs[inputs.length - 1].focus(); }
+  _updateFBadge() {
+    const n = this.filters.filter(f => f.regex && f.valid).length;
+    this.elFBadge.textContent = n; this.elFBadge.classList.toggle('show', n > 0);
+  }
+
+  // ── Apply filters ─────────────────────────────────────────
+  _applyFilters() {
+    this.expandedKeys.clear();
+    this._updateFBadge();
+
+    // Anchor scroll to current top line
+    let anchorLine = -1, anchorOffset = 0;
+    if (this.displayRows.length > 0) {
+      const topIdx = Math.floor(this.elScroll.scrollTop / LINE_H);
+      const topRow = this.displayRows[Math.min(topIdx, this.displayRows.length - 1)];
+      anchorOffset = this.elScroll.scrollTop % LINE_H;
+      anchorLine = (topRow.type === 'line' || topRow.type === 'fline') ? topRow.lineIdx : topRow.from;
+    }
+
+    const incl = this.filters.filter(f => f.mode === 'include' && f.regex && f.valid);
+    const excl = this.filters.filter(f => f.mode === 'exclude' && f.regex && f.valid);
+    const vis = new Set();
+    for (let i = 0; i < this.allLines.length; i++) {
+      const line = this.allLines[i];
+      let ok = incl.length === 0;
+      if (!ok) { for (const f of incl) { f.regex.lastIndex=0; if (f.regex.test(line)) { ok=true; break; } } }
+      if ( ok) { for (const f of excl) { f.regex.lastIndex=0; if (f.regex.test(line)) { ok=false; break; } } }
+      if (ok) vis.add(i);
+    }
+    this.visibleSet = vis;
+    this._buildRows();
+    this._updateFStats();
+    if (gSyncEnabled) { rebuildSync(); return; }
+    this._updateSpacer();
+
+    if (anchorLine >= 0) {
+      let newRow = 0;
+      for (let r = 0; r < this.displayRows.length; r++) {
+        const row = this.displayRows[r];
+        const rowStart = (row.type === 'line' || row.type === 'fline') ? row.lineIdx : row.from;
+        if (rowStart >= anchorLine || ((row.type === 'coll' || row.type === 'chdr') && row.from <= anchorLine && anchorLine < row.to)) { newRow = r; break; }
+      }
+      this.elScroll.scrollTop = newRow * LINE_H + anchorOffset;
+    }
+    this._renderViewport();
+  }
+  _updateFStats() {
+    const vis = this.visibleSet.size, tot = this.allLines.length;
+    const active = this.filters.some(f => f.regex && f.valid);
+    this.elFStats.textContent = tot === 0 ? '' : active ? `${vis.toLocaleString()} / ${tot.toLocaleString()} lines` : `${tot.toLocaleString()} lines`;
+  }
+
+  // ── Highlights ────────────────────────────────────────────
+  _hlFlags(h) { return h.ci ? 'gim' : 'gm'; }
+  _compileHl(h) {
+    h.valid = true; h.regex = null;
+    if (h.pattern.trim()) { try { h.regex = new RegExp(h.pattern, this._hlFlags(h)); } catch { h.valid = false; } }
+  }
+  _addHighlight(def) {
+    const id = ++this._hseq;
+    const h = { id, pattern: '', scope: 'line', colorMode: 'bg', color: '#4ec9b0', ci: false, regex: null, valid: true };
+    if (def) Object.assign(h, def);
+    h.id = id;
+    this._compileHl(h);
+    this.highlights.push(h);
+    this._renderHlList();
+    this._updateHlBadge();
+    this._saveHighlights();
+  }
+  _removeHighlight(id) { this.highlights = this.highlights.filter(h => h.id !== id); this._renderHlList(); this._updateHlBadge(); this._renderViewport(); this._saveHighlights(); }
+  _setHlPattern(id, pattern) {
+    const h = this.highlights.find(h => h.id === id); if (!h) return;
+    h.pattern = pattern; this._compileHl(h);
+    const row = this.elHlList.querySelector(`[data-id="${id}"]`);
+    if (row) row.querySelector('.filter-input').classList.toggle('invalid', !h.valid);
+    this._updateHlBadge(); this._renderViewport(); this._saveHighlights();
+  }
+  _toggleHlScope(id) {
+    const h = this.highlights.find(h => h.id === id); if (!h) return;
+    h.scope = h.scope === 'line' ? 'text' : 'line';
+    const row = this.elHlList.querySelector(`[data-id="${id}"]`);
+    if (row) {
+      const btn = row.querySelector('.hl-scope-btn');
+      btn.className = `seg-btn hl-scope-btn ${h.scope === 'line' ? 'seg-active' : 'seg-neutral'}`;
+      btn.textContent = h.scope === 'line' ? 'Line' : 'Text';
+    }
+    this._renderViewport(); this._saveHighlights();
+  }
+  _toggleHlColorMode(id) {
+    const h = this.highlights.find(h => h.id === id); if (!h) return;
+    h.colorMode = h.colorMode === 'bg' ? 'fg' : 'bg';
+    const row = this.elHlList.querySelector(`[data-id="${id}"]`);
+    if (row) {
+      const btn = row.querySelector('.hl-cm-btn');
+      btn.textContent = h.colorMode === 'bg' ? 'BG' : 'FG';
+    }
+    this._renderViewport(); this._saveHighlights();
+  }
+  _toggleHlCi(id) {
+    const h = this.highlights.find(h => h.id === id); if (!h) return;
+    h.ci = !h.ci;
+    this._compileHl(h);
+    const row = this.elHlList.querySelector(`[data-id="${id}"]`);
+    if (row) {
+      const btn = row.querySelector('.hl-ci-btn');
+      btn.className = `seg-btn hl-ci-btn ${h.ci ? 'seg-neutral' : 'seg-active'}`;
+      btn.title = h.ci ? 'Case-insensitive' : 'Case-sensitive';
+    }
+    this._updateHlBadge(); this._renderViewport(); this._saveHighlights();
+  }
+  _setHlColor(id, color) {
+    const h = this.highlights.find(h => h.id === id); if (!h) return;
+    h.color = color;
+    const row = this.elHlList.querySelector(`[data-id="${id}"]`);
+    if (row) row.querySelector('.swatch-dot').style.background = color;
+    this._renderViewport(); this._saveHighlights();
+  }
+  _renderHlList() {
+    this.elHlList.innerHTML = '';
+    for (const h of this.highlights) {
+      const row = document.createElement('div');
+      row.className = 'rule-row'; row.dataset.id = h.id;
+
+      const inp = document.createElement('input');
+      inp.type = 'text'; inp.className = 'filter-input' + (h.valid ? '' : ' invalid');
+      inp.placeholder = 'regex…'; inp.value = h.pattern;
+      inp.addEventListener('input', e => this._setHlPattern(h.id, e.target.value));
+      inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); this._addHighlight(); this._focusLast(this.elHlList); } });
+
+      // Scope: Line / Text
+      const scopeBtn = document.createElement('button');
+      scopeBtn.className = `seg-btn hl-scope-btn ${h.scope === 'line' ? 'seg-active' : 'seg-neutral'}`;
+      scopeBtn.textContent = h.scope === 'line' ? 'Line' : 'Text';
+      scopeBtn.title = 'Highlight full line or matched text only';
+      scopeBtn.addEventListener('click', () => this._toggleHlScope(h.id));
+
+      // Color swatch
+      const swatchWrap = document.createElement('label');
+      swatchWrap.className = 'swatch-wrap'; swatchWrap.title = 'Pick color';
+      const swatchDot = document.createElement('span');
+      swatchDot.className = 'swatch-dot'; swatchDot.style.background = h.color;
+      const colorInput = document.createElement('input');
+      colorInput.type = 'color'; colorInput.value = h.color;
+      colorInput.addEventListener('input', e => this._setHlColor(h.id, e.target.value));
+      swatchWrap.append(swatchDot, colorInput);
+
+      // Color mode: BG / FG
+      const cmBtn = document.createElement('button');
+      cmBtn.className = 'seg-btn hl-cm-btn seg-neutral';
+      cmBtn.textContent = h.colorMode === 'bg' ? 'BG' : 'FG';
+      cmBtn.title = 'Apply as background or text color';
+      cmBtn.addEventListener('click', () => this._toggleHlColorMode(h.id));
+
+      // Case sensitivity: Aa = case-sensitive (active/default), aa = case-insensitive
+      const ciBtn = document.createElement('button');
+      ciBtn.className = `seg-btn hl-ci-btn ${h.ci ? 'seg-neutral' : 'seg-active'}`;
+      ciBtn.textContent = 'Aa';
+      ciBtn.title = h.ci ? 'Case-insensitive' : 'Case-sensitive';
+      ciBtn.addEventListener('click', () => this._toggleHlCi(h.id));
+
+      const rm = document.createElement('button');
+      rm.className = 'rm-btn'; rm.textContent = '×';
+      rm.addEventListener('click', () => this._removeHighlight(h.id));
+
+      row.append(inp, scopeBtn, swatchWrap, cmBtn, ciBtn, rm);
+      this.elHlList.appendChild(row);
+    }
+  }
+  _updateHlBadge() {
+    const n = this.highlights.filter(h => h.regex && h.valid).length;
+    this.elHlBadge.textContent = n; this.elHlBadge.classList.toggle('show', n > 0);
+  }
+
+  // ── Display rows ──────────────────────────────────────────
+  _buildRows() {
+    const rows = []; let i = 0; const n = this.allLines.length;
+    while (i < n) {
+      if (this.visibleSet.has(i)) { rows.push({ type: 'line', lineIdx: i }); i++; }
+      else {
+        let j = i; while (j < n && !this.visibleSet.has(j)) j++;
+        const key = `${i}:${j}`;
+        if (this.expandedKeys.has(key)) {
+          rows.push({ type: 'chdr', from: i, to: j, count: j - i, key });
+          for (let k = i; k < j; k++) rows.push({ type: 'fline', lineIdx: k, key });
+        } else {
+          rows.push({ type: 'coll', from: i, to: j, count: j - i, key });
+        }
+        i = j;
+      }
+    }
+    this.displayRows = rows;
+  }
+  toggleExpand(key) {
+    if (this.expandedKeys.has(key)) this.expandedKeys.delete(key); else this.expandedKeys.add(key);
+    this._buildRows(); this._updateSpacer(); this._renderViewport();
+  }
+  _updateSpacer() { this.elSpacer.style.height = (this.displayRows.length * LINE_H) + 'px'; }
+
+  // ── Virtual scroll ────────────────────────────────────────
+  _renderViewport() {
+    if (gSyncEnabled) { this._renderSyncViewport(); return; }
+    const total = this.displayRows.length;
+    if (!total) { this.elWindow.innerHTML = ''; return; }
+    const scrollT = this.elScroll.scrollTop, viewH = this.elScroll.clientHeight || 400;
+    const start = Math.max(0, Math.floor(scrollT / LINE_H) - BUFFER);
+    const end   = Math.min(total - 1, Math.ceil((scrollT + viewH) / LINE_H) + BUFFER);
+    this.elWindow.style.top = (start * LINE_H) + 'px';
+    const frag = document.createDocumentFragment();
+    for (let r = start; r <= end; r++) frag.appendChild(this._makeRow(this.displayRows[r]));
+    this.elWindow.innerHTML = '';
+    this.elWindow.appendChild(frag);
+  }
+
+  _makeRow(row) {
+    const div = document.createElement('div');
+    div.style.height = LINE_H + 'px';
+
+    if (row.type === 'line' || row.type === 'fline') {
+      const curLine = this.searchCurIdx >= 0 ? this.searchMatches[this.searchCurIdx] : -1;
+      const isCur   = row.lineIdx === curLine;
+      const hlStyle = this._lineHighlightStyle(row.lineIdx);
+
+      div.className = 'log-line' + (row.type === 'fline' ? ' fline' : '') + (isCur ? ' cur-line' : '');
+      if (!isCur) {
+        if (hlStyle.bg) div.style.background = hlStyle.bg;
+        if (hlStyle.fg) div.style.color = hlStyle.fg;
+      }
+
+      const num = document.createElement('span');
+      num.className = 'lnum';
+      num.textContent = row.lineIdx + 1;
+      div.appendChild(num);
+
+      // Column mode
+      if (this.colEnabled && this.colRegex && this.colValid && this.columns.length) {
+        const line  = this.allLines[row.lineIdx];
+        const match = this.colRegex.exec(line);
+        if (match && match.indices) {
+          const spans   = this._collectLineSpans(row.lineIdx, isCur);
+          const visible = this.columns.filter(c => c.visible);
+          for (let ci = 0; ci < visible.length; ci++) {
+            const col    = visible[ci];
+            const isLast = ci === visible.length - 1;
+            const cell   = document.createElement('span');
+            cell.className = 'col-cell' + (isLast ? ' col-flex' : '');
+            if (!isLast) cell.style.width = col.width + 'px';
+            const gi = match.indices.groups?.[col.name];
+            if (gi) {
+              cell.innerHTML = buildHighlightHtml(line.slice(gi[0], gi[1]), sliceSpans(spans, gi[0], gi[1]));
+            }
+            div.appendChild(cell);
+          }
+          return div;
+        }
+        // Line doesn't match the column regex — show as plain text, dimmed
+        div.classList.add('col-nomatch');
+      }
+
+      const txt = document.createElement('span');
+      txt.className = 'ltext';
+      txt.innerHTML = this._buildLineHtml(row.lineIdx, isCur);
+      div.appendChild(txt);
+    } else {
+      const isOpen = row.type === 'chdr';
+      div.className = 'log-collapse' + (isOpen ? ' open' : '');
+      const dot = document.createElement('span'); dot.className = 'lnum-dot'; dot.textContent = '···';
+      const lbl = document.createElement('span'); lbl.className = 'coll-label';
+      lbl.innerHTML = isOpen
+        ? `<span class="coll-count">${row.count.toLocaleString()}</span> lines &nbsp;<span class="coll-arrow">▲ collapse</span>`
+        : `<span class="coll-count">${row.count.toLocaleString()}</span> lines hidden &nbsp;<span class="coll-arrow">▶ expand</span>`;
+      div.appendChild(dot); div.appendChild(lbl);
+      div.addEventListener('click', () => this.toggleExpand(row.key));
+    }
+    return div;
+  }
+
+  // Compute line-scope highlight style for a line
+  _lineHighlightStyle(lineIdx) {
+    const result = { bg: null, fg: null };
+    const text = this.allLines[lineIdx];
+    for (const h of this.highlights) {
+      if (!h.regex || !h.valid || h.scope !== 'line') continue;
+      h.regex.lastIndex = 0;
+      if (h.regex.test(text)) {
+        if (h.colorMode === 'bg') result.bg = hexToRgba(h.color, 0.28);
+        else result.fg = h.color;
+      }
+    }
+    return result;
+  }
+
+  _collectLineSpans(lineIdx, isCurSearchLine) {
+    const text = this.allLines[lineIdx];
+    const spans = [];
+
+    // Text-scope highlight rules (priority 1)
+    for (const h of this.highlights) {
+      if (!h.regex || !h.valid || h.scope !== 'text') continue;
+      const re = new RegExp(h.regex.source, this._hlFlags(h));
+      let m;
+      while ((m = re.exec(text)) !== null) {
+        const styleAttr = h.colorMode === 'bg'
+          ? `background:${hexToRgba(h.color, 0.35)}`
+          : `color:${h.color}`;
+        spans.push({ s: m.index, e: m.index + m[0].length, style: styleAttr, priority: 1 });
+        if (m[0].length === 0) re.lastIndex++;
+      }
+    }
+
+    // Search hits (priority 2), current match (priority 3)
+    if (this.searchRe) {
+      const re = new RegExp(this.searchRe.source, 'gi');
+      let m;
+      while ((m = re.exec(text)) !== null) {
+        spans.push({ s: m.index, e: m.index + m[0].length, cls: isCurSearchLine ? 'sc' : 'sh', priority: isCurSearchLine ? 3 : 2 });
+        if (m[0].length === 0) re.lastIndex++;
+      }
+    }
+
+    return spans;
+  }
+
+  _buildLineHtml(lineIdx, isCurSearchLine) {
+    return buildHighlightHtml(this.allLines[lineIdx], this._collectLineSpans(lineIdx, isCurSearchLine));
+  }
+
+  // ── Columns ───────────────────────────────────────────────
+  _compileColRegex() {
+    this.colValid = false; this.colRegex = null;
+    if (!this.colPattern.trim()) return;
+    try { this.colRegex = new RegExp(this.colPattern, 'd'); this.colValid = true; } catch {}
+  }
+  _detectColGroups(savedCols) {
+    const names    = [...this.colPattern.matchAll(/\(\?<(\w+)>/g)].map(m => m[1]);
+    const savedMap = Object.fromEntries((savedCols ?? []).map(c => [c.name, c]));
+    const prev     = Object.fromEntries(this.columns.map(c => [c.name, c]));
+    this.columns   = names.map(name => {
+      const src = savedCols ? savedMap[name] : prev[name];
+      const w = src?.width   ?? DEFAULT_COL_WIDTHS[name] ?? 120;
+      const v = src?.visible ?? true;
+      return { name, width: w, visible: v };
+    });
+  }
+  _setColPattern(pattern) {
+    this.colPattern = pattern;
+    this.elColRegex.classList.remove('invalid');
+    this._compileColRegex();
+    if (pattern.trim() && !this.colValid) this.elColRegex.classList.add('invalid');
+    this._detectColGroups();
+    this._renderColList();
+    this._saveColumns();
+    this._renderViewport();
+  }
+  _toggleColEnabled(on) {
+    this.colEnabled = on;
+    this._updateColBadge();
+    this._saveColumns();
+    this._renderViewport();
+  }
+  _setColWidth(name, width) {
+    const col = this.columns.find(c => c.name === name); if (!col) return;
+    col.width = width;
+    this._renderColList();
+    this._saveColumns();
+    this._renderViewport();
+  }
+  _toggleColVisible(name) {
+    const col = this.columns.find(c => c.name === name); if (!col) return;
+    col.visible = !col.visible;
+    this._renderColList();
+    this._saveColumns();
+    this._renderViewport();
+  }
+  _renderColList() {
+    this.elColList.innerHTML = '';
+    for (let ci = 0; ci < this.columns.length; ci++) {
+      const col    = this.columns[ci];
+      const isLast = ci === this.columns.length - 1;
+      const row    = document.createElement('div');
+      row.className = 'col-row';
+
+      const visBtn = document.createElement('button');
+      visBtn.className = `seg-btn ${col.visible ? 'seg-active' : 'seg-neutral'}`;
+      visBtn.style.cssText = 'width:28px;padding:0;font-size:13px;';
+      visBtn.textContent = col.visible ? '👁' : '🚫';
+      visBtn.title = col.visible ? 'Hide column' : 'Show column';
+      visBtn.addEventListener('click', () => this._toggleColVisible(col.name));
+
+      const nameEl = document.createElement('span');
+      nameEl.className = 'col-row-name';
+      nameEl.style.opacity = col.visible ? '1' : '0.4';
+      nameEl.textContent = col.name;
+
+      const infoEl = document.createElement('span');
+      infoEl.className = 'col-row-info';
+
+      if (isLast) {
+        infoEl.textContent = 'flex';
+      } else {
+        infoEl.textContent = 'width ';
+        const wi = document.createElement('input');
+        wi.type = 'number'; wi.className = 'col-width-input';
+        wi.value = col.width; wi.min = 20; wi.max = 2000;
+        wi.addEventListener('input', e => {
+          const v = Math.max(20, Math.min(2000, parseInt(e.target.value) || col.width));
+          this._setColWidth(col.name, v);
+        });
+        infoEl.appendChild(wi);
+        infoEl.appendChild(document.createTextNode(' px'));
+      }
+
+      row.append(visBtn, nameEl, infoEl);
+      this.elColList.appendChild(row);
+    }
+  }
+  _updateColBadge() {
+    const on = this.colEnabled && this.colValid && this.columns.length > 0;
+    this.elColBadge.textContent = on ? this.columns.length : '';
+    this.elColBadge.classList.toggle('show', on);
+  }
+  _saveColumns() {
+    localStorage.setItem(this._storageKey('columns'), JSON.stringify({
+      enabled: this.colEnabled,
+      pattern: this.colPattern,
+      cols: this.columns.map(c => ({ name: c.name, width: c.width, visible: c.visible }))
+    }));
+  }
+  _loadColumns() {
+    const sc = localStorage.getItem(this._storageKey('columns'));
+    if (sc) {
+      try {
+        const d = JSON.parse(sc);
+        this.colEnabled = !!d.enabled;
+        this.colPattern = d.pattern ?? DEFAULT_COL_PATTERN;
+        this._compileColRegex();
+        this._detectColGroups(d.cols);
+      } catch {
+        this._compileColRegex();
+        this._detectColGroups();
+      }
+    } else {
+      this._compileColRegex();
+      this._detectColGroups();
+    }
+    this.elColEnable.checked = this.colEnabled;
+    this.elColRegex.value    = this.colPattern;
+    if (this.colPattern.trim() && !this.colValid) this.elColRegex.classList.add('invalid');
+    this._renderColList();
+    this._updateColBadge();
+  }
+
+  // ── Temporal sync ─────────────────────────────────────────
+  _computeSyncTimestamps() {
+    const n = this.allLines.length;
+    this.syncTimestamps = new Array(n).fill(null);
+    if (!this.syncTimeCol || !this.syncTimeFmt) return;
+    const parse = buildTimestampParser(this.syncTimeFmt);
+    for (let i = 0; i < n; i++) {
+      const line = this.allLines[i];
+      let text = line;
+      if (this.colRegex && this.colValid) {
+        const m = this.colRegex.exec(line);
+        if (m?.groups?.[this.syncTimeCol] !== undefined) text = m.groups[this.syncTimeCol];
+      }
+      this.syncTimestamps[i] = parse(text);
+    }
+  }
+  _renderSyncViewport() {
+    const total = gSyncRows.length;
+    if (!total) { this.elWindow.innerHTML = ''; return; }
+    const scrollT = this.elScroll.scrollTop, viewH = this.elScroll.clientHeight || 400;
+    const start = Math.max(0, Math.floor(scrollT / LINE_H) - BUFFER);
+    const end   = Math.min(total - 1, Math.ceil((scrollT + viewH) / LINE_H) + BUFFER);
+    this.elWindow.style.top = (start * LINE_H) + 'px';
+    const frag = document.createDocumentFragment();
+    for (let r = start; r <= end; r++) {
+      const sr  = gSyncRows[r];
+      const idx = this.syncSide === 'A' ? sr.idxA : sr.idxB;
+      if (idx !== null) {
+        frag.appendChild(this._makeRow({ type: 'line', lineIdx: idx }));
+      } else {
+        const ph = document.createElement('div');
+        ph.className = 'sync-ph'; ph.style.height = LINE_H + 'px';
+        frag.appendChild(ph);
+      }
+    }
+    this.elWindow.innerHTML = '';
+    this.elWindow.appendChild(frag);
+  }
+  _saveSyncCfg() {
+    localStorage.setItem(this._storageKey('synccfg'), JSON.stringify({ timeCol: this.syncTimeCol, timeFmt: this.syncTimeFmt }));
+  }
+  _loadSyncCfg() {
+    const s = localStorage.getItem(this._storageKey('synccfg'));
+    if (s) {
+      try { const d = JSON.parse(s); this.syncTimeCol = d.timeCol ?? 'timestamp'; this.syncTimeFmt = d.timeFmt ?? DEFAULT_SYNC_FMT; } catch {}
+    }
+  }
+
+  // ── Selection actions ─────────────────────────────────────
+  _addFilterWithPattern(pattern, mode) {
+    const f = { id: ++this._fseq, pattern, mode, ci: false, regex: null, valid: true };
+    this._compileF(f);
+    this.filters.push(f);
+    this._renderFList();
+    this._updateFBadge();
+    this._saveFilters();
+    this._applyFilters();
+    if (!this._filtersOpen) this._togglePanel('filter');
+  }
+  _addHighlightWithPattern(pattern) {
+    this._addHighlight({ pattern, scope: 'text', colorMode: 'bg', color: '#4ec9b0', ci: false });
+    if (!this._hlOpen) this._togglePanel('highlight');
+  }
+  _openSearchWith(text) {
+    this._openSearch();
+    this.elSearchInput.value = text;
+    this._onSearchInput();
+  }
+
+  // ── Load file ──────────────────────────────────────────────
+  loadFile(file) {
+    const reader = new FileReader();
+    reader.onload = e => {
+      this.allLines = e.target.result.split(/\r?\n/);
+      if (this.allLines[this.allLines.length - 1] === '') this.allLines.pop();
+      this.elName.textContent = file.name; this.elName.title = file.name; this.elName.classList.remove('no-file');
+      this.elEmpty.style.display = 'none'; this.elScroll.style.display = 'block';
+      this.elScroll.scrollTop = 0;
+      this.searchRe = null; this.searchMatches = []; this.searchCurIdx = -1;
+      if (this.elSearchInput.value) this._onSearchInput(); else this._updateSearchInfo();
+      this._applyFilters();
+    };
+    reader.readAsText(file);
+  }
+
+  onResize() { this._renderViewport(); }
+}
+
+// ─── Selection popup ───────────────────────────────────────────
+let _selPanel = null, _selText = '';
+const _selPopup = (() => {
+  const el = document.createElement('div');
+  el.className = 'sel-popup';
+  el.innerHTML = `
+    <button class="sel-action incl" data-a="incl" title="Add include filter for this text">Show only</button>
+    <button class="sel-action excl" data-a="excl" title="Add exclude filter for this text">Hide lines</button>
+    <button class="sel-action"      data-a="hl"   title="Highlight this text">Highlight</button>
+    <button class="sel-action"      data-a="find" title="Search for this text">Search</button>
+  `;
+  document.body.appendChild(el);
+  el.addEventListener('mousedown', e => e.stopPropagation());
+  el.addEventListener('click', e => {
+    const btn = e.target.closest('[data-a]');
+    if (!btn || !_selPanel) return;
+    const escaped = escapeRegex(_selText);
+    switch (btn.dataset.a) {
+      case 'incl': _selPanel._addFilterWithPattern(escaped, 'include'); break;
+      case 'excl': _selPanel._addFilterWithPattern(escaped, 'exclude'); break;
+      case 'hl':   _selPanel._addHighlightWithPattern(escaped);         break;
+      case 'find': _selPanel._openSearchWith(escaped);                  break;
+    }
+    hideSelPopup();
+    window.getSelection().removeAllRanges();
+  });
+  return el;
+})();
+
+function showSelPopup(panel, text, cx, cy) {
+  _selPanel = panel; _selText = text;
+  _selPopup.style.left = '0'; _selPopup.style.top = '0';
+  _selPopup.classList.add('show');
+  requestAnimationFrame(() => {
+    const pw = _selPopup.offsetWidth, ph = _selPopup.offsetHeight;
+    let left = cx - pw / 2;
+    let top  = cy - ph - 8;
+    if (top < 4) top = cy + 22;
+    left = Math.max(4, Math.min(left, window.innerWidth - pw - 4));
+    _selPopup.style.left = left + 'px';
+    _selPopup.style.top  = top  + 'px';
+  });
+}
+function hideSelPopup() {
+  _selPopup.classList.remove('show');
+  _selPanel = null; _selText = '';
+}
+
+document.addEventListener('mousedown', () => hideSelPopup());
+document.addEventListener('keydown', e => { if (e.key === 'Escape') hideSelPopup(); });
+
+// ─── Init ──────────────────────────────────────────────────────
+const panelL = new Panel(document.getElementById('panelL'), 'L');
+const panelR = new Panel(document.getElementById('panelR'), 'R');
+panelL.syncSide = 'A'; panelL.otherPanel = panelR;
+panelR.syncSide = 'B'; panelR.otherPanel = panelL;
+
+// ── Sync bar ─────────────────────────────────────────────────
+(function () {
+  const bar        = document.getElementById('syncBar');
+  const enableEl   = document.getElementById('syncEnable');
+  const colAEl     = document.getElementById('syncColA');
+  const fmtAEl     = document.getElementById('syncFmtA');
+  const offsetEl   = document.getElementById('syncOffset');
+  const colBEl     = document.getElementById('syncColB');
+  const fmtBEl     = document.getElementById('syncFmtB');
+
+  // Load saved global sync config
+  const saved = localStorage.getItem('logviewer-sync');
+  if (saved) {
+    try {
+      const d = JSON.parse(saved);
+      gSyncEnabled  = !!d.enabled;
+      gSyncOffsetMs = d.offsetMs ?? 0;
+    } catch {}
+  }
+
+  // Init UI from state
+  enableEl.checked  = gSyncEnabled;
+  offsetEl.value    = gSyncOffsetMs;
+  colAEl.value      = panelL.syncTimeCol;
+  fmtAEl.value      = panelL.syncTimeFmt;
+  colBEl.value      = panelR.syncTimeCol;
+  fmtBEl.value      = panelR.syncTimeFmt;
+  if (gSyncEnabled) bar.classList.add('show');
+
+  document.getElementById('syncToggleBtn').addEventListener('click', () => bar.classList.toggle('show'));
+
+  enableEl.addEventListener('change', e => {
+    gSyncEnabled = e.target.checked;
+    saveGlobalSync();
+    if (gSyncEnabled) {
+      rebuildSync();
+    } else {
+      gSyncRows = [];
+      panelL._updateSpacer(); panelL._renderViewport();
+      panelR._updateSpacer(); panelR._renderViewport();
+    }
+  });
+
+  offsetEl.addEventListener('input', e => {
+    gSyncOffsetMs = parseInt(e.target.value) || 0;
+    saveGlobalSync();
+    if (gSyncEnabled) rebuildSync();
+  });
+
+  colAEl.addEventListener('input', e => { panelL.syncTimeCol = e.target.value.trim(); panelL._saveSyncCfg(); if (gSyncEnabled) rebuildSync(); });
+  fmtAEl.addEventListener('input', e => { panelL.syncTimeFmt = e.target.value.trim(); panelL._saveSyncCfg(); if (gSyncEnabled) rebuildSync(); });
+  colBEl.addEventListener('input', e => { panelR.syncTimeCol = e.target.value.trim(); panelR._saveSyncCfg(); if (gSyncEnabled) rebuildSync(); });
+  fmtBEl.addEventListener('input', e => { panelR.syncTimeFmt = e.target.value.trim(); panelR._saveSyncCfg(); if (gSyncEnabled) rebuildSync(); });
+})();
+
+// ── Settings export / import ─────────────────────────────────
+document.getElementById('exportBtn').addEventListener('click', () => {
+  const data = {};
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k.startsWith('logviewer-')) data[k] = localStorage.getItem(k);
+  }
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = 'logviewer-settings.json'; a.click();
+  URL.revokeObjectURL(url);
+});
+
+(function () {
+  const fileInput = document.getElementById('importFile');
+  document.getElementById('importBtn').addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', e => {
+    const file = e.target.files[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const data = JSON.parse(ev.target.result);
+        let count = 0;
+        for (const [k, v] of Object.entries(data)) {
+          if (k.startsWith('logviewer-')) { localStorage.setItem(k, v); count++; }
+        }
+        if (count === 0) { alert('No logviewer settings found in file.'); return; }
+        location.reload();
+      } catch (err) {
+        alert('Failed to load settings: ' + err.message);
+      }
+    };
+    reader.readAsText(file);
+    fileInput.value = '';
+  });
+})();
+
+document.getElementById('themeBtn').addEventListener('click', () => {
+  const root = document.documentElement;
+  const dark = root.getAttribute('data-theme') === 'dark';
+  root.setAttribute('data-theme', dark ? 'light' : 'dark');
+  document.getElementById('themeBtn').textContent = dark ? '☾ Dark' : '☀ Light';
+});
+
+(function () {
+  const splitter = document.getElementById('splitter');
+  const wrap = document.getElementById('panelsWrap');
+  const left = document.getElementById('panelL'), right = document.getElementById('panelR');
+  let dragging = false, startX = 0, startLW = 0;
+  splitter.addEventListener('mousedown', e => {
+    dragging = true; startX = e.clientX; startLW = left.getBoundingClientRect().width;
+    splitter.classList.add('dragging'); document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none'; e.preventDefault();
+  });
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const total = wrap.getBoundingClientRect().width - 4;
+    const newLW = Math.max(120, Math.min(total - 120, startLW + (e.clientX - startX)));
+    const pct = (newLW / total * 100).toFixed(3);
+    left.style.flex = `0 0 ${pct}%`; right.style.flex = `0 0 ${(100 - parseFloat(pct)).toFixed(3)}%`;
+    panelL.onResize(); panelR.onResize();
+  });
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return; dragging = false; splitter.classList.remove('dragging');
+    document.body.style.cursor = document.body.style.userSelect = '';
+  });
+})();
+
+window.addEventListener('resize', () => { panelL.onResize(); panelR.onResize(); });
+</script>
+</body>
+</html>
