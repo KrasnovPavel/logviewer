@@ -232,8 +232,11 @@ body {
 .sc { background: var(--search-cur-bg); color: var(--search-cur-fg); border-radius: 2px; padding: 0 1px; font-weight: 600; }
 
 /* ── Wrap lines (toggle) ─────────────────────── */
-body.wrap-lines .log-spacer { display: none; }
-body.wrap-lines .log-window { position: static; }
+/* Wrap mode is virtualized the same way classic mode is (.log-window stays
+   position:absolute, .log-spacer still fakes the scrollable height) — only
+   row height varies now (auto instead of fixed 20px), computed per-row via
+   JS (see Panel._wrapHeights/_wrapPrefix), so only a small window around
+   the viewport ever needs to be laid out, not the whole file. */
 /* align-items stays at the flexbox default (stretch) here — with height:auto
    on .col-cell/.lnum, that makes every cell's border/background stretch to
    match the row's tallest (wrapped) cell. flex-start would leave short fixed
@@ -630,21 +633,39 @@ function saveGlobalSync() {
 // Wrapped sync rows have variable, independently-wrapped heights per panel —
 // equalize each pair so panel A's row i and panel B's row i stay the same
 // height, which is what keeps matching scrollTop values visually aligned.
+// Each panel virtualizes its own window (_renderWrapVirtual), so their
+// rendered index ranges can differ slightly right before equalizing —
+// equalize whatever overlaps this pass; anything outside it gets picked up
+// on the next render once the mirrored scrollTop settles.
 function equalizeSyncRowHeights() {
-  const a = panelL.elWindow.children, b = panelR.elWindow.children;
-  const n = Math.min(a.length, b.length);
+  const aStart = panelL._wrapRenderedStart, aEls = panelL._wrapRenderedEls;
+  const bStart = panelR._wrapRenderedStart, bEls = panelR._wrapRenderedEls;
+  const start = Math.max(aStart, bStart);
+  const end   = Math.min(aStart + aEls.length, bStart + bEls.length);
+  if (end <= start) return;
   // Reads (offsetHeight) and writes (style.height) must be fully separated
   // into their own passes — interleaving them per-row forces a synchronous
-  // layout recalculation on every single iteration (layout thrashing),
-  // turning this into O(n) reflows instead of one.
-  for (let i = 0; i < n; i++) { a[i].style.height = ''; b[i].style.height = ''; }
-  const heights = new Array(n);
-  for (let i = 0; i < n; i++) heights[i] = Math.max(a[i].offsetHeight, b[i].offsetHeight) + 'px';
-  for (let i = 0; i < n; i++) { a[i].style.height = heights[i]; b[i].style.height = heights[i]; }
+  // layout recalculation on every single iteration (layout thrashing). This
+  // only ever spans the small rendered window now (not the whole file), so
+  // even the one forced reflow this causes is cheap.
+  const heights = new Array(end - start);
+  for (let i = start; i < end; i++) heights[i - start] = Math.max(aEls[i - aStart].offsetHeight, bEls[i - bStart].offsetHeight);
+  let changed = false;
+  for (let i = start; i < end; i++) {
+    const h = heights[i - start], hpx = h + 'px';
+    aEls[i - aStart].style.height = hpx; bEls[i - bStart].style.height = hpx;
+    if (panelL._wrapHeights[i] !== h) { panelL._wrapHeights[i] = h; changed = true; }
+    if (panelR._wrapHeights[i] !== h) { panelR._wrapHeights[i] = h; changed = true; }
+  }
+  if (changed) {
+    const n = panelL._activeRowCount();
+    panelL._wrapPrefixDirty = true; panelL._ensureWrapPrefix(n); panelL.elSpacer.style.height = panelL._wrapPrefix[n] + 'px';
+    panelR._wrapPrefixDirty = true; panelR._ensureWrapPrefix(n); panelR.elSpacer.style.height = panelR._wrapPrefix[n] + 'px';
+  }
 }
 function renderSyncWrapBoth() {
-  panelL._renderSyncWrapped();
-  panelR._renderSyncWrapped();
+  panelL._renderWrapVirtual();
+  panelR._renderWrapVirtual();
   equalizeSyncRowHeights();
 }
 
@@ -655,6 +676,10 @@ function rebuildSync() {
   panelL._computeSyncTimestamps();
   panelR._computeSyncTimestamps();
   gSyncRows = buildSyncRows(panelL, panelR, gSyncOffsetMs);
+  // gSyncRows is a fresh array — any cached wrap heights (indexed into the
+  // old one) no longer mean anything.
+  panelL._invalidateWrapHeights();
+  panelR._invalidateWrapHeights();
   if (wrapActive()) {
     renderSyncWrapBoth();
   } else {
@@ -729,6 +754,15 @@ class Panel {
     this.syncTimeCol    = 'timestamp';
     this.syncTimeFmt    = DEFAULT_SYNC_FMT;
     this.syncTimestamps = [];
+    // Wrap-mode variable-height virtualization: measured height per active
+    // row index (displayRows index normally, gSyncRows index while synced),
+    // null = not yet measured (falls back to _wrapEstimate). _wrapPrefix[i]
+    // is the cumulative pixel offset of row i, rebuilt from _wrapHeights
+    // whenever dirty — see _ensureWrapPrefix().
+    this._wrapHeights      = [];
+    this._wrapPrefix       = null;
+    this._wrapPrefixDirty  = true;
+    this._wrapEstimate     = LINE_H;
     this._buildDOM();
     this._loadFromStorage();
   }
@@ -893,16 +927,17 @@ class Panel {
 
     // Scroll
     this.elScroll.addEventListener('scroll', () => {
-      // In wrap mode every row is already rendered in normal flow (no
-      // windowing) — re-running _renderViewport per scroll tick would
-      // rebuild the entire line list on every frame.
-      if (!wrapActive()) this._renderViewport();
+      // Wrap mode is virtualized too now (Panel._renderWrapVirtual), so it
+      // needs a re-render on scroll just like classic mode — only ~30 rows
+      // around the viewport are ever built/measured, regardless of file
+      // size, so this is cheap in both modes.
+      this._renderViewport();
       if (this.elColHeader.classList.contains('show'))
         this.elChInner.style.transform = `translateX(-${this.elScroll.scrollLeft}px)`;
       if (gSyncEnabled && !_syncLock && this.otherPanel) {
         _syncLock = true;
         this.otherPanel.elScroll.scrollTop = this.elScroll.scrollTop;
-        if (!wrapActive()) this.otherPanel._renderViewport();
+        this.otherPanel._renderViewport();
         _syncLock = false;
       }
     }, { passive: true });
@@ -997,12 +1032,17 @@ class Panel {
       }
     }
     if (rowIdx !== -1) {
+      const viewH = this.elScroll.clientHeight || 400;
       if (wrapActive()) {
-        this._renderViewport();
-        const el = this.elWindow.children[rowIdx];
-        if (el) el.scrollIntoView({ block: 'center' });
+        // Virtualized — the target row isn't necessarily rendered yet, so
+        // there's no DOM element to scrollIntoView(). Center it using the
+        // cached prefix-sum position instead (possibly still an estimate
+        // for a not-yet-measured row; it self-corrects once rendered).
+        const n = this._activeRowCount();
+        this._ensureWrapPrefix(n);
+        const y = this._wrapPrefix[Math.max(0, Math.min(rowIdx, n))];
+        this.elScroll.scrollTop = Math.max(0, y - viewH / 2);
       } else {
-        const viewH = this.elScroll.clientHeight || 400;
         this.elScroll.scrollTop = Math.max(0, rowIdx * LINE_H - viewH / 2 + LINE_H / 2);
       }
     }
@@ -1349,6 +1389,9 @@ class Panel {
       }
     }
     this.displayRows = rows;
+    // The row list changed shape, so any cached wrap heights (indexed into
+    // the old list) are meaningless now.
+    this._invalidateWrapHeights();
   }
   toggleExpand(key) {
     if (this.expandedKeys.has(key)) this.expandedKeys.delete(key); else this.expandedKeys.add(key);
@@ -1358,15 +1401,64 @@ class Panel {
     if (gSyncEnabled) { rebuildSync(); return; }
     this._updateSpacer(); this._renderViewport();
   }
-  _updateSpacer() { this.elSpacer.style.height = (this.displayRows.length * LINE_H) + 'px'; }
+  _updateSpacer() {
+    // Wrap mode's spacer height is derived from _wrapPrefix and kept in
+    // sync inside _renderWrapVirtual() itself, since it depends on measured
+    // (not just counted) row heights.
+    if (wrapActive()) return;
+    this.elSpacer.style.height = (this.displayRows.length * LINE_H) + 'px';
+  }
+
+  // ── Wrap-mode variable-height virtualization ───────────────
+  // Row list currently in play — displayRows normally, or per-side entries
+  // from the shared gSyncRows while temporal sync is on (mirrors the split
+  // classic mode already has between _renderViewport/_renderSyncViewport,
+  // just unified into one accessor both wrap paths can share).
+  _activeRowCount() { return gSyncEnabled ? gSyncRows.length : this.displayRows.length; }
+  _activeRowDescriptor(i) {
+    if (gSyncEnabled) {
+      const sr = gSyncRows[i];
+      const entry = this.syncSide === 'A' ? sr?.a : sr?.b;
+      if (!entry) return null; // no line on this side at this synced position
+      return entry.coll ? entry.coll : { type: entry.fline ? 'fline' : 'line', lineIdx: entry.lineIdx };
+    }
+    return this.displayRows[i];
+  }
+  _invalidateWrapHeights() {
+    this._wrapHeights = [];
+    this._wrapPrefixDirty = true;
+  }
+  _ensureWrapPrefix(n) {
+    if (this._wrapPrefix && this._wrapPrefix.length === n + 1 && !this._wrapPrefixDirty) return;
+    const prefix = new Array(n + 1);
+    prefix[0] = 0;
+    for (let i = 0; i < n; i++) prefix[i + 1] = prefix[i] + (this._wrapHeights[i] ?? this._wrapEstimate);
+    this._wrapPrefix = prefix;
+    this._wrapPrefixDirty = false;
+  }
+  // Binary search over the (monotonically increasing) prefix-sum array —
+  // pure arithmetic over cached numbers, no DOM/layout involved, so this is
+  // safe to call as often as needed (scroll anchoring, resize, etc.).
+  _wrapRowAtOffset(y) {
+    const n = this._activeRowCount();
+    this._ensureWrapPrefix(n);
+    if (!n) return 0;
+    const prefix = this._wrapPrefix;
+    let lo = 0, hi = n - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (prefix[mid + 1] > y) hi = mid; else lo = mid + 1;
+    }
+    return lo;
+  }
 
   // ── Virtual scroll ────────────────────────────────────────
   _renderViewport() {
-    if (gSyncEnabled) {
-      if (wrapActive()) renderSyncWrapBoth(); else this._renderSyncViewport();
+    if (wrapActive()) {
+      if (gSyncEnabled) renderSyncWrapBoth(); else this._renderWrapVirtual();
       return;
     }
-    if (wrapActive()) { this._renderWrapped(); return; }
+    if (gSyncEnabled) { this._renderSyncViewport(); return; }
     const total = this.displayRows.length;
     if (!total) { this.elWindow.innerHTML = ''; return; }
     const scrollT = this.elScroll.scrollTop, viewH = this.elScroll.clientHeight || 400;
@@ -1379,81 +1471,53 @@ class Panel {
     this.elWindow.appendChild(frag);
   }
 
-  // When wrapping is on, row heights vary so the fixed-height virtual
-  // window can't be used — render every row in normal document flow and
-  // let the browser drive the scrollbar off actual content height.
-  //
-  // 'line'/'fline' rows (the vast majority in any real log) carry no
-  // listeners, so consecutive runs of them are batched into one HTML string
-  // and parsed in bulk via a detached container — far fewer JS→DOM calls
-  // than creating each element individually. 'coll'/'chdr'/'fsep' rows do
-  // have listeners, so those still go through _makeRow() as real elements.
-  _renderWrapped() {
-    this.elWindow.style.top = '0px';
+  // Wrap mode's counterpart of the classic windowed renderer above — same
+  // position:absolute window + spacer trick, except row height is variable
+  // (auto instead of fixed LINE_H), so the window's start/end row indices
+  // and pixel offset come from the measured-height prefix-sum array instead
+  // of plain multiplication. Only ~2×BUFFER_ROWS rows are ever built or
+  // measured per call, regardless of file size — this is what makes wrap
+  // mode's resize/scroll cost independent of total line count.
+  _renderWrapVirtual() {
+    const n = this._activeRowCount();
+    if (!n) {
+      this.elWindow.innerHTML = ''; this.elSpacer.style.height = '0px';
+      this._wrapRenderedStart = 0; this._wrapRenderedEls = [];
+      return;
+    }
+    this._ensureWrapPrefix(n);
+    const scrollT = this.elScroll.scrollTop, viewH = this.elScroll.clientHeight || 400;
+    const BUFFER_ROWS = 15;
+    const startIdx = Math.max(0, this._wrapRowAtOffset(scrollT) - BUFFER_ROWS);
+    const targetY = scrollT + viewH + this._wrapEstimate * BUFFER_ROWS;
+    let endIdx = startIdx, y = this._wrapPrefix[startIdx];
+    while (endIdx < n && y < targetY) { y += (this._wrapHeights[endIdx] ?? this._wrapEstimate); endIdx++; }
+
+    this.elWindow.style.top = this._wrapPrefix[startIdx] + 'px';
     const frag = document.createDocumentFragment();
-    this._appendRowsBulk(frag, this.displayRows);
+    const rendered = [];
+    for (let i = startIdx; i < endIdx; i++) {
+      const desc = this._activeRowDescriptor(i);
+      let el;
+      if (desc) el = this._makeRow(desc);
+      else { el = document.createElement('div'); el.className = 'sync-ph'; }
+      frag.appendChild(el);
+      rendered.push(el);
+    }
     this.elWindow.innerHTML = '';
     this.elWindow.appendChild(frag);
-  }
-  _appendRowsBulk(frag, rows) {
-    const tmp = document.createElement('div');
-    let buf = '';
-    const flush = () => {
-      if (!buf) return;
-      tmp.innerHTML = buf;
-      while (tmp.firstChild) frag.appendChild(tmp.firstChild);
-      buf = '';
-    };
-    for (const row of rows) {
-      if (row.type === 'line' || row.type === 'fline') buf += this._lineRowHtml(row);
-      else { flush(); frag.appendChild(this._makeRow(row)); }
-    }
-    flush();
-  }
-  // String-building counterpart of _makeRow's 'line'/'fline' branch — must
-  // be kept in sync with it. Building markup in bulk and parsing it once is
-  // much cheaper than one createElement()/appendChild() call per node when
-  // rendering thousands of rows at once.
-  _lineRowHtml(row) {
-    const curLine = this.searchCurIdx >= 0 ? this.searchMatches[this.searchCurIdx] : -1;
-    const isCur   = row.lineIdx === curLine;
-    const hlStyle = this._lineHighlightStyle(row.lineIdx);
-    let cls = 'log-line' + (row.type === 'fline' ? ' fline' : '') + (isCur ? ' cur-line' : '');
-    let style = '';
-    if (!isCur) {
-      if (hlStyle.bg) style += `background:${hlStyle.bg};`;
-      if (hlStyle.fg) style += `color:${hlStyle.fg};`;
-    }
-    const styleAttr = style ? ` style="${style}"` : '';
-    const numHtml = `<span class="lnum">${row.lineIdx + 1}</span>`;
+    this._wrapRenderedStart = startIdx;
+    this._wrapRenderedEls = rendered;
 
-    if (this.colEnabled && this.colRegex && this.colValid && this.columns.length) {
-      const line  = this.allLines[row.lineIdx];
-      const match = this.colRegex.exec(line);
-      if (match && match.indices) {
-        const spans   = this._collectLineSpans(row.lineIdx, isCur);
-        const visible = this.columns.filter(c => c.visible);
-        let cellsHtml = '';
-        for (let ci = 0; ci < visible.length; ci++) {
-          const col     = visible[ci];
-          const isLast  = ci === visible.length - 1;
-          const gi      = match.indices.groups?.[col.name];
-          // A truly empty cell (no inline content at all) can end up with
-          // zero natural line-box height in some engines once .col-cell's
-          // height is auto (wrap mode) instead of the classic fixed 20px —
-          // &nbsp; guarantees there's always real inline content.
-          const inner   = (gi ? buildHighlightHtml(line.slice(gi[0], gi[1]), sliceSpans(spans, gi[0], gi[1])) : '') || '&nbsp;';
-          const cellCls = 'col-cell' + (isLast ? ' col-flex' : '');
-          const wAttr   = isLast ? '' : ` style="width:${col.width}px"`;
-          cellsHtml += `<span class="${cellCls}"${wAttr}>${inner}</span>`;
-        }
-        return `<div class="${cls}"${styleAttr}>${numHtml}${cellsHtml}</div>`;
-      }
-      cls += ' col-nomatch';
+    // Measure (reads only — writes already happened above) and update the
+    // height cache for whatever changed.
+    let changed = false;
+    for (let i = 0; i < rendered.length; i++) {
+      const h = rendered[i].offsetHeight;
+      if (this._wrapHeights[startIdx + i] !== h) { this._wrapHeights[startIdx + i] = h; changed = true; }
     }
-
-    const txtHtml = `<span class="ltext">${this._buildLineHtml(row.lineIdx, isCur)}</span>`;
-    return `<div class="${cls}"${styleAttr}>${numHtml}${txtHtml}</div>`;
+    if (changed) { this._wrapPrefixDirty = true; this._ensureWrapPrefix(n); }
+    this.elSpacer.style.height = this._wrapPrefix[n] + 'px';
   }
 
   _makeRow(row) {
@@ -1608,6 +1672,9 @@ class Panel {
     this._detectColGroups();
     this._renderColList();
     this._saveColumns();
+    // Column layout affects how much width each row's text has to wrap
+    // into — cached wrap heights measured under the old columns are stale.
+    this._invalidateWrapHeights();
     this._renderViewport();
   }
   _toggleColEnabled(on) {
@@ -1615,6 +1682,7 @@ class Panel {
     this._updateColBadge();
     this._saveColumns();
     this._renderColHeader();
+    this._invalidateWrapHeights();
     this._renderViewport();
   }
   _setColWidth(name, width) {
@@ -1622,6 +1690,7 @@ class Panel {
     col.width = width;
     this._renderColList();
     this._saveColumns();
+    this._invalidateWrapHeights();
     this._renderViewport();
   }
   _toggleColVisible(name) {
@@ -1629,6 +1698,7 @@ class Panel {
     col.visible = !col.visible;
     this._renderColList();
     this._saveColumns();
+    this._invalidateWrapHeights();
     this._renderViewport();
   }
   _renderColList() {
@@ -1746,33 +1816,6 @@ class Panel {
         frag.appendChild(ph);
       }
     }
-    this.elWindow.innerHTML = '';
-    this.elWindow.appendChild(frag);
-  }
-  // Wrap-mode counterpart of _renderSyncViewport — no windowing (heights vary
-  // per line so the fixed LINE_H math doesn't apply); row-height equalization
-  // across panels happens afterward in equalizeSyncRowHeights(). Collapse/chdr
-  // entries carry a click listener (to expand/collapse), so — like
-  // _renderWrapped — line entries are batched into HTML parsed in bulk while
-  // collapse entries go through _makeRow() as real elements.
-  _renderSyncWrapped() {
-    this.elWindow.style.top = '0px';
-    const frag = document.createDocumentFragment();
-    const tmp = document.createElement('div');
-    let buf = '';
-    const flush = () => {
-      if (!buf) return;
-      tmp.innerHTML = buf;
-      while (tmp.firstChild) frag.appendChild(tmp.firstChild);
-      buf = '';
-    };
-    for (const sr of gSyncRows) {
-      const entry = this.syncSide === 'A' ? sr.a : sr.b;
-      if (entry?.coll) { flush(); frag.appendChild(this._makeRow(entry.coll)); }
-      else if (entry) buf += this._lineRowHtml({ type: entry.fline ? 'fline' : 'line', lineIdx: entry.lineIdx });
-      else buf += '<div class="sync-ph"></div>';
-    }
-    flush();
     this.elWindow.innerHTML = '';
     this.elWindow.appendChild(frag);
   }
@@ -2134,6 +2177,10 @@ panelR.syncSide = 'B'; panelR.otherPanel = panelL;
       rebuildSync();
     } else {
       gSyncRows = [];
+      // The active row list switches from gSyncRows-indexed back to
+      // displayRows-indexed — a completely different meaning per index, so
+      // any cached wrap heights from the synced state are meaningless now.
+      panelL._invalidateWrapHeights(); panelR._invalidateWrapHeights();
       panelL._updateSpacer(); panelL._renderViewport();
       panelR._updateSpacer(); panelR._renderViewport();
     }
@@ -2190,56 +2237,64 @@ document.getElementById('exportBtn').addEventListener('click', () => {
 })();
 
 // Row index into whichever list a panel is currently rendering (displayRows
-// normally, gSyncRows while synced) that sits at the top of its viewport.
-// That list itself doesn't change across a wrap toggle or a pure width
-// change (splitter drag / window resize) — only how each row is drawn —
-// so this index stays valid across those and lets us restore roughly the
-// same scroll position afterward.
+// normally, gSyncRows while synced) that sits at the top of its viewport —
+// used to restore roughly the same logical scroll position across a wrap
+// toggle or a width change (splitter drag/reset, window resize), both of
+// which change wrap mode's row heights. Both directions are now pure
+// arithmetic over the cached prefix-sum array (_wrapPrefix) — no DOM reads
+// at all — so capturing/restoring this is effectively free regardless of
+// file size; it no longer needs to force (or avoid forcing) any reflow.
 function topRowIndex(panel) {
-  if (wrapActive()) {
-    const kids = panel.elWindow.children, top = panel.elScroll.scrollTop;
-    for (let i = 0; i < kids.length; i++) {
-      if (kids[i].offsetTop + kids[i].offsetHeight > top) return i;
-    }
-    return Math.max(0, kids.length - 1);
-  }
+  if (wrapActive()) return panel._wrapRowAtOffset(panel.elScroll.scrollTop);
   return Math.floor(panel.elScroll.scrollTop / LINE_H);
 }
 function scrollToRowIndex(panel, rowIdx) {
   if (wrapActive()) {
-    const kids = panel.elWindow.children;
-    const el = kids[Math.max(0, Math.min(rowIdx, kids.length - 1))];
-    if (el) panel.elScroll.scrollTop = el.offsetTop;
+    const n = panel._activeRowCount();
+    panel._ensureWrapPrefix(n);
+    panel.elScroll.scrollTop = panel._wrapPrefix[Math.max(0, Math.min(rowIdx, n))];
   } else {
     panel.elScroll.scrollTop = rowIdx * LINE_H;
   }
 }
-// Re-render both panels around a width change (splitter drag, split reset,
-// window resize), anchoring each panel's scroll position by row index so
-// wrap mode's re-wrapped (and possibly re-heighted) rows don't leave the
-// view sitting on a stale scrollTop pixel value. Classic mode's row heights
-// never depend on width, so a plain onResize() there is already correct —
-// only wrap mode needs the anchor dance.
-function refreshAfterResize(a, b) {
-  if (!wrapActive()) { a.onResize(); b.onResize(); return; }
-  const anchorA = topRowIndex(a), anchorB = topRowIndex(b);
-  a.onResize(); b.onResize();
-  scrollToRowIndex(a, anchorA);
-  // In sync mode both panels track the same row — mirror the exact
-  // resulting scrollTop instead of recomputing it independently.
-  if (gSyncEnabled) b.elScroll.scrollTop = a.elScroll.scrollTop;
-  else scrollToRowIndex(b, anchorB);
+function captureResizeAnchor() {
+  if (!wrapActive()) return null;
+  return { l: topRowIndex(panelL), r: topRowIndex(panelR) };
+}
+// Apply a width change: restore the row-index anchor and re-render. Because
+// wrap mode is now virtualized (only ~30 rows around the viewport are ever
+// built/measured, regardless of file size — see Panel._renderWrapVirtual),
+// this whole sequence is cheap enough to run on every single mousemove tick
+// of a splitter drag or 'resize' event, the same way classic mode already
+// does — no more skipping/throttling/deferring needed.
+//
+// Deliberately does NOT invalidate the wrap height cache here. A row's
+// pre-resize height is a stale-but-reasonable estimate for its post-resize
+// height (better than resetting to the single-line default), and every
+// render already re-measures whatever it actually draws and updates the
+// cache for just those rows — wiping the whole cache on every tick would
+// throw away everything except the visible window and recompute the
+// anchor's target scrollTop against pure defaults each time, which is what
+// made the view drift instead of staying pinned during a drag.
+function applyResizeAnchor(anchor, done) {
+  if (anchor) {
+    scrollToRowIndex(panelL, anchor.l);
+    // In sync mode both panels track the same row — mirror the exact
+    // resulting scrollTop instead of recomputing it independently.
+    if (gSyncEnabled) panelR.elScroll.scrollTop = panelL.elScroll.scrollTop;
+    else scrollToRowIndex(panelR, anchor.r);
+  }
+  panelL.onResize();
+  // In sync+wrap mode the call above already rendered and equalized both
+  // panels via renderSyncWrapBoth() — a second pass would just redo it.
+  if (!(gSyncEnabled && wrapActive())) panelR.onResize();
+  done?.();
 }
 
 (function () {
   const btn = document.getElementById('wrapBtn');
   gWrapLines = localStorage.getItem('logviewer-wrap') === '1';
   const apply = () => {
-    // When turning wrap off, drop the old fully-rendered (unvirtualized) line
-    // list *before* flipping the CSS class — otherwise the classic renderer's
-    // scrollTop/clientHeight reads right after the class change would force a
-    // synchronous layout of the whole still-attached wrapped tree first.
-    if (!wrapActive()) { panelL.elWindow.innerHTML = ''; panelR.elWindow.innerHTML = ''; }
     document.body.classList.toggle('wrap-lines', wrapActive());
     btn.textContent = gWrapLines ? '↵ Wrap: On' : '↵ Wrap: Off';
     panelL._renderViewport();
@@ -2296,11 +2351,13 @@ function setPanelCollapsed(panel, collapsed) {
   const splitter = document.getElementById('splitter');
   const wrap = document.getElementById('panelsWrap');
   const left = document.getElementById('panelL'), right = document.getElementById('panelR');
-  let dragging = false, startX = 0, startLW = 0;
+  let dragging = false, startX = 0, startLW = 0, dragAnchor = null;
   splitter.addEventListener('mousedown', e => {
     if (left.classList.contains('collapsed') || right.classList.contains('collapsed')) return;
     dragging = true; startX = e.clientX; startLW = left.getBoundingClientRect().width;
-    splitter.classList.add('dragging'); document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none'; e.preventDefault();
+    dragAnchor = captureResizeAnchor(); // before any width change happens this drag
+    splitter.classList.add('dragging');
+    document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none'; e.preventDefault();
   });
   document.addEventListener('mousemove', e => {
     if (!dragging) return;
@@ -2308,35 +2365,36 @@ function setPanelCollapsed(panel, collapsed) {
     const newLW = Math.max(120, Math.min(total - 120, startLW + (e.clientX - startX)));
     const pct = (newLW / total * 100).toFixed(3);
     left.style.flex = `0 0 ${pct}%`; right.style.flex = `0 0 ${(100 - parseFloat(pct)).toFixed(3)}%`;
-    // Wrap mode re-renders the whole (unvirtualized) line list on every
-    // onResize() call — doing that on every mousemove tick during a drag
-    // is what makes it laggy. The wrapped text already reflows to the new
-    // width live via plain CSS (nothing in wrap mode's markup depends on
-    // width), so it's safe to skip re-rendering mid-drag and only do the
-    // one real refresh once the drag ends (needed in sync+wrap mode, where
-    // row heights are explicitly pinned and can go stale at a new width).
-    if (!wrapActive()) { panelL.onResize(); panelR.onResize(); }
+    // Wrap mode is now virtualized (Panel._renderWrapVirtual only builds/
+    // measures the ~30 rows around the viewport, regardless of file size),
+    // so — unlike before — it's cheap enough to just re-render live on every
+    // tick, the same way classic mode already did.
+    applyResizeAnchor(dragAnchor);
   });
   document.addEventListener('mouseup', () => {
     if (!dragging) return; dragging = false; splitter.classList.remove('dragging');
     document.body.style.cursor = document.body.style.userSelect = '';
-    if (wrapActive()) refreshAfterResize(panelL, panelR);
   });
   splitter.title = 'Drag to resize · Double-click to reset to equal size';
   splitter.addEventListener('dblclick', () => {
     if (left.classList.contains('collapsed') || right.classList.contains('collapsed')) return;
+    const anchor = captureResizeAnchor();
     left.style.flex = ''; right.style.flex = '';
-    refreshAfterResize(panelL, panelR);
+    applyResizeAnchor(anchor);
   });
 })();
 
-// Debounced for the same reason as the splitter drag above — dragging the
-// OS window edge can fire many 'resize' events per second, and re-rendering
-// wrap mode's full line list on every one of them is what makes it laggy.
-let _winResizeTimer = null;
+// Window resize can fire many events per second while the OS window edge is
+// being dragged. Each is now cheap (virtualized wrap re-render), but the
+// anchor is still captured once per burst (not re-captured every event) so
+// the row that was on-screen when the resize started stays pinned there for
+// the whole burst, instead of drifting tick to tick.
+let _winResizeIdleTimer = null, _winResizeAnchor;
 window.addEventListener('resize', () => {
-  clearTimeout(_winResizeTimer);
-  _winResizeTimer = setTimeout(() => refreshAfterResize(panelL, panelR), 100);
+  if (_winResizeAnchor === undefined) _winResizeAnchor = captureResizeAnchor();
+  applyResizeAnchor(_winResizeAnchor);
+  clearTimeout(_winResizeIdleTimer);
+  _winResizeIdleTimer = setTimeout(() => { _winResizeAnchor = undefined; }, 150);
 });
 </script>
 </body>
