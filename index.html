@@ -2189,6 +2189,48 @@ document.getElementById('exportBtn').addEventListener('click', () => {
   });
 })();
 
+// Row index into whichever list a panel is currently rendering (displayRows
+// normally, gSyncRows while synced) that sits at the top of its viewport.
+// That list itself doesn't change across a wrap toggle or a pure width
+// change (splitter drag / window resize) — only how each row is drawn —
+// so this index stays valid across those and lets us restore roughly the
+// same scroll position afterward.
+function topRowIndex(panel) {
+  if (wrapActive()) {
+    const kids = panel.elWindow.children, top = panel.elScroll.scrollTop;
+    for (let i = 0; i < kids.length; i++) {
+      if (kids[i].offsetTop + kids[i].offsetHeight > top) return i;
+    }
+    return Math.max(0, kids.length - 1);
+  }
+  return Math.floor(panel.elScroll.scrollTop / LINE_H);
+}
+function scrollToRowIndex(panel, rowIdx) {
+  if (wrapActive()) {
+    const kids = panel.elWindow.children;
+    const el = kids[Math.max(0, Math.min(rowIdx, kids.length - 1))];
+    if (el) panel.elScroll.scrollTop = el.offsetTop;
+  } else {
+    panel.elScroll.scrollTop = rowIdx * LINE_H;
+  }
+}
+// Re-render both panels around a width change (splitter drag, split reset,
+// window resize), anchoring each panel's scroll position by row index so
+// wrap mode's re-wrapped (and possibly re-heighted) rows don't leave the
+// view sitting on a stale scrollTop pixel value. Classic mode's row heights
+// never depend on width, so a plain onResize() there is already correct —
+// only wrap mode needs the anchor dance.
+function refreshAfterResize(a, b) {
+  if (!wrapActive()) { a.onResize(); b.onResize(); return; }
+  const anchorA = topRowIndex(a), anchorB = topRowIndex(b);
+  a.onResize(); b.onResize();
+  scrollToRowIndex(a, anchorA);
+  // In sync mode both panels track the same row — mirror the exact
+  // resulting scrollTop instead of recomputing it independently.
+  if (gSyncEnabled) b.elScroll.scrollTop = a.elScroll.scrollTop;
+  else scrollToRowIndex(b, anchorB);
+}
+
 (function () {
   const btn = document.getElementById('wrapBtn');
   gWrapLines = localStorage.getItem('logviewer-wrap') === '1';
@@ -2206,31 +2248,6 @@ document.getElementById('exportBtn').addEventListener('click', () => {
     // redo the same work.
     if (!(gSyncEnabled && wrapActive())) panelR._renderViewport();
   };
-
-  // Row index into whichever list the panel is currently rendering
-  // (displayRows normally, gSyncRows while synced) that sits at the top of
-  // its viewport. That list itself doesn't change when wrap is toggled —
-  // only how each row is drawn — so this index stays valid across the
-  // switch and lets us restore roughly the same scroll position.
-  function topRowIndex(panel) {
-    if (wrapActive()) {
-      const kids = panel.elWindow.children, top = panel.elScroll.scrollTop;
-      for (let i = 0; i < kids.length; i++) {
-        if (kids[i].offsetTop + kids[i].offsetHeight > top) return i;
-      }
-      return Math.max(0, kids.length - 1);
-    }
-    return Math.floor(panel.elScroll.scrollTop / LINE_H);
-  }
-  function scrollToRowIndex(panel, rowIdx) {
-    if (wrapActive()) {
-      const kids = panel.elWindow.children;
-      const el = kids[Math.max(0, Math.min(rowIdx, kids.length - 1))];
-      if (el) panel.elScroll.scrollTop = el.offsetTop;
-    } else {
-      panel.elScroll.scrollTop = rowIdx * LINE_H;
-    }
-  }
 
   apply();
   btn.addEventListener('click', () => {
@@ -2291,21 +2308,36 @@ function setPanelCollapsed(panel, collapsed) {
     const newLW = Math.max(120, Math.min(total - 120, startLW + (e.clientX - startX)));
     const pct = (newLW / total * 100).toFixed(3);
     left.style.flex = `0 0 ${pct}%`; right.style.flex = `0 0 ${(100 - parseFloat(pct)).toFixed(3)}%`;
-    panelL.onResize(); panelR.onResize();
+    // Wrap mode re-renders the whole (unvirtualized) line list on every
+    // onResize() call — doing that on every mousemove tick during a drag
+    // is what makes it laggy. The wrapped text already reflows to the new
+    // width live via plain CSS (nothing in wrap mode's markup depends on
+    // width), so it's safe to skip re-rendering mid-drag and only do the
+    // one real refresh once the drag ends (needed in sync+wrap mode, where
+    // row heights are explicitly pinned and can go stale at a new width).
+    if (!wrapActive()) { panelL.onResize(); panelR.onResize(); }
   });
   document.addEventListener('mouseup', () => {
     if (!dragging) return; dragging = false; splitter.classList.remove('dragging');
     document.body.style.cursor = document.body.style.userSelect = '';
+    if (wrapActive()) refreshAfterResize(panelL, panelR);
   });
   splitter.title = 'Drag to resize · Double-click to reset to equal size';
   splitter.addEventListener('dblclick', () => {
     if (left.classList.contains('collapsed') || right.classList.contains('collapsed')) return;
     left.style.flex = ''; right.style.flex = '';
-    panelL.onResize(); panelR.onResize();
+    refreshAfterResize(panelL, panelR);
   });
 })();
 
-window.addEventListener('resize', () => { panelL.onResize(); panelR.onResize(); });
+// Debounced for the same reason as the splitter drag above — dragging the
+// OS window edge can fire many 'resize' events per second, and re-rendering
+// wrap mode's full line list on every one of them is what makes it laggy.
+let _winResizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(_winResizeTimer);
+  _winResizeTimer = setTimeout(() => refreshAfterResize(panelL, panelR), 100);
+});
 </script>
 </body>
 </html>
