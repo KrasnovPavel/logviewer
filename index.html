@@ -488,8 +488,12 @@ body.wrap-lines .col-cell   { height: auto; white-space: pre-wrap; overflow: vis
 const LINE_H = 20;
 const BUFFER = 120;
 
+// Single pass instead of four chained replace() calls — matters once wrap
+// mode runs this over every line in the file instead of just the ~250 visible.
+const ESC_RE  = /[&<>"]/g;
+const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' };
 function esc(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  return s.replace(ESC_RE, c => ESC_MAP[c]);
 }
 
 // Build highlighted HTML from a list of spans.
@@ -594,11 +598,14 @@ function saveGlobalSync() {
 function equalizeSyncRowHeights() {
   const a = panelL.elWindow.children, b = panelR.elWindow.children;
   const n = Math.min(a.length, b.length);
+  // Reads (offsetHeight) and writes (style.height) must be fully separated
+  // into their own passes — interleaving them per-row forces a synchronous
+  // layout recalculation on every single iteration (layout thrashing),
+  // turning this into O(n) reflows instead of one.
   for (let i = 0; i < n; i++) { a[i].style.height = ''; b[i].style.height = ''; }
-  for (let i = 0; i < n; i++) {
-    const h = Math.max(a[i].offsetHeight, b[i].offsetHeight) + 'px';
-    a[i].style.height = h; b[i].style.height = h;
-  }
+  const heights = new Array(n);
+  for (let i = 0; i < n; i++) heights[i] = Math.max(a[i].offsetHeight, b[i].offsetHeight) + 'px';
+  for (let i = 0; i < n; i++) { a[i].style.height = heights[i]; b[i].style.height = heights[i]; }
 }
 function renderSyncWrapBoth() {
   panelL._renderSyncWrapped();
@@ -1322,12 +1329,74 @@ class Panel {
   // When wrapping is on, row heights vary so the fixed-height virtual
   // window can't be used — render every row in normal document flow and
   // let the browser drive the scrollbar off actual content height.
+  //
+  // 'line'/'fline' rows (the vast majority in any real log) carry no
+  // listeners, so consecutive runs of them are batched into one HTML string
+  // and parsed in bulk via a detached container — far fewer JS→DOM calls
+  // than creating each element individually. 'coll'/'chdr'/'fsep' rows do
+  // have listeners, so those still go through _makeRow() as real elements.
   _renderWrapped() {
     this.elWindow.style.top = '0px';
     const frag = document.createDocumentFragment();
-    for (const row of this.displayRows) frag.appendChild(this._makeRow(row));
+    this._appendRowsBulk(frag, this.displayRows);
     this.elWindow.innerHTML = '';
     this.elWindow.appendChild(frag);
+  }
+  _appendRowsBulk(frag, rows) {
+    const tmp = document.createElement('div');
+    let buf = '';
+    const flush = () => {
+      if (!buf) return;
+      tmp.innerHTML = buf;
+      while (tmp.firstChild) frag.appendChild(tmp.firstChild);
+      buf = '';
+    };
+    for (const row of rows) {
+      if (row.type === 'line' || row.type === 'fline') buf += this._lineRowHtml(row);
+      else { flush(); frag.appendChild(this._makeRow(row)); }
+    }
+    flush();
+  }
+  // String-building counterpart of _makeRow's 'line'/'fline' branch — must
+  // be kept in sync with it. Building markup in bulk and parsing it once is
+  // much cheaper than one createElement()/appendChild() call per node when
+  // rendering thousands of rows at once.
+  _lineRowHtml(row) {
+    const curLine = this.searchCurIdx >= 0 ? this.searchMatches[this.searchCurIdx] : -1;
+    const isCur   = row.lineIdx === curLine;
+    const hlStyle = this._lineHighlightStyle(row.lineIdx);
+    let cls = 'log-line' + (row.type === 'fline' ? ' fline' : '') + (isCur ? ' cur-line' : '');
+    let style = '';
+    if (!isCur) {
+      if (hlStyle.bg) style += `background:${hlStyle.bg};`;
+      if (hlStyle.fg) style += `color:${hlStyle.fg};`;
+    }
+    const styleAttr = style ? ` style="${style}"` : '';
+    const numHtml = `<span class="lnum">${row.lineIdx + 1}</span>`;
+
+    if (this.colEnabled && this.colRegex && this.colValid && this.columns.length) {
+      const line  = this.allLines[row.lineIdx];
+      const match = this.colRegex.exec(line);
+      if (match && match.indices) {
+        const spans   = this._collectLineSpans(row.lineIdx, isCur);
+        const visible = this.columns.filter(c => c.visible);
+        let cellsHtml = '';
+        for (let ci = 0; ci < visible.length; ci++) {
+          const col     = visible[ci];
+          const isLast  = ci === visible.length - 1;
+          const gi      = match.indices.groups?.[col.name];
+          const inner   = gi ? buildHighlightHtml(line.slice(gi[0], gi[1]), sliceSpans(spans, gi[0], gi[1])) : '';
+          const cellCls = 'col-cell' + (isLast ? ' col-flex' : '');
+          const wAttr   = isLast ? '' : ` style="width:${col.width}px"`;
+          cellsHtml += `<span class="${cellCls}"${wAttr}>${inner}</span>`;
+        }
+        return `<div class="${cls}"${styleAttr}>${numHtml}${cellsHtml}</div>`;
+      }
+      cls += ' col-nomatch';
+    }
+
+    const txtHtml = `<span class="ltext">${this._buildLineHtml(row.lineIdx, isCur)}</span>`;
+    return `<div class="${cls}"${styleAttr}>${numHtml}${txtHtml}</div>`;
   }
 
   _makeRow(row) {
@@ -1423,9 +1492,14 @@ class Panel {
     const spans = [];
 
     // Text-scope highlight rules (priority 1)
+    // Reuse the already-compiled regex (just reset lastIndex) instead of
+    // constructing a new one per line — this runs for every rendered line,
+    // and re-parsing the pattern each time gets expensive once wrap mode
+    // renders the whole file instead of just the visible window.
     for (const h of this.highlights) {
       if (!h.regex || !h.valid || h.scope !== 'text') continue;
-      const re = new RegExp(h.regex.source, this._hlFlags(h));
+      const re = h.regex;
+      re.lastIndex = 0;
       let m;
       while ((m = re.exec(text)) !== null) {
         const styleAttr = h.colorMode === 'bg'
@@ -1438,7 +1512,8 @@ class Panel {
 
     // Search hits (priority 2), current match (priority 3)
     if (this.searchRe) {
-      const re = new RegExp(this.searchRe.source, 'gi');
+      const re = this.searchRe;
+      re.lastIndex = 0;
       let m;
       while ((m = re.exec(text)) !== null) {
         spans.push({ s: m.index, e: m.index + m[0].length, cls: isCurSearchLine ? 'sc' : 'sh', priority: isCurSearchLine ? 3 : 2 });
@@ -1620,22 +1695,17 @@ class Panel {
   }
   // Wrap-mode counterpart of _renderSyncViewport — no windowing (heights vary
   // per line so the fixed LINE_H math doesn't apply); row-height equalization
-  // across panels happens afterward in equalizeSyncRowHeights().
+  // across panels happens afterward in equalizeSyncRowHeights(). Sync rows
+  // never carry listeners (no collapse/fsep rows here), so this can just
+  // build one HTML string and parse it in a single shot.
   _renderSyncWrapped() {
     this.elWindow.style.top = '0px';
-    const frag = document.createDocumentFragment();
+    let html = '';
     for (const sr of gSyncRows) {
       const idx = this.syncSide === 'A' ? sr.idxA : sr.idxB;
-      if (idx !== null) {
-        frag.appendChild(this._makeRow({ type: 'line', lineIdx: idx }));
-      } else {
-        const ph = document.createElement('div');
-        ph.className = 'sync-ph';
-        frag.appendChild(ph);
-      }
+      html += idx !== null ? this._lineRowHtml({ type: 'line', lineIdx: idx }) : '<div class="sync-ph"></div>';
     }
-    this.elWindow.innerHTML = '';
-    this.elWindow.appendChild(frag);
+    this.elWindow.innerHTML = html;
   }
   _saveSyncCfg() {
     localStorage.setItem(this._storageKey('synccfg'), JSON.stringify({ timeCol: this.syncTimeCol, timeFmt: this.syncTimeFmt }));
@@ -2054,16 +2124,57 @@ document.getElementById('exportBtn').addEventListener('click', () => {
   const btn = document.getElementById('wrapBtn');
   gWrapLines = localStorage.getItem('logviewer-wrap') === '1';
   const apply = () => {
+    // When turning wrap off, drop the old fully-rendered (unvirtualized) line
+    // list *before* flipping the CSS class — otherwise the classic renderer's
+    // scrollTop/clientHeight reads right after the class change would force a
+    // synchronous layout of the whole still-attached wrapped tree first.
+    if (!wrapActive()) { panelL.elWindow.innerHTML = ''; panelR.elWindow.innerHTML = ''; }
     document.body.classList.toggle('wrap-lines', wrapActive());
     btn.textContent = gWrapLines ? '↵ Wrap: On' : '↵ Wrap: Off';
     panelL._renderViewport();
-    panelR._renderViewport();
+    // In sync+wrap mode the call above already rendered and height-equalized
+    // both panels via renderSyncWrapBoth() — a second full pass would just
+    // redo the same work.
+    if (!(gSyncEnabled && wrapActive())) panelR._renderViewport();
   };
+
+  // Row index into whichever list the panel is currently rendering
+  // (displayRows normally, gSyncRows while synced) that sits at the top of
+  // its viewport. That list itself doesn't change when wrap is toggled —
+  // only how each row is drawn — so this index stays valid across the
+  // switch and lets us restore roughly the same scroll position.
+  function topRowIndex(panel) {
+    if (wrapActive()) {
+      const kids = panel.elWindow.children, top = panel.elScroll.scrollTop;
+      for (let i = 0; i < kids.length; i++) {
+        if (kids[i].offsetTop + kids[i].offsetHeight > top) return i;
+      }
+      return Math.max(0, kids.length - 1);
+    }
+    return Math.floor(panel.elScroll.scrollTop / LINE_H);
+  }
+  function scrollToRowIndex(panel, rowIdx) {
+    if (wrapActive()) {
+      const kids = panel.elWindow.children;
+      const el = kids[Math.max(0, Math.min(rowIdx, kids.length - 1))];
+      if (el) panel.elScroll.scrollTop = el.offsetTop;
+    } else {
+      panel.elScroll.scrollTop = rowIdx * LINE_H;
+    }
+  }
+
   apply();
   btn.addEventListener('click', () => {
+    const anchorL = topRowIndex(panelL);
+    const anchorR = topRowIndex(panelR);
     gWrapLines = !gWrapLines;
     localStorage.setItem('logviewer-wrap', gWrapLines ? '1' : '0');
     apply();
+    scrollToRowIndex(panelL, anchorL);
+    // In sync mode both panels track the same row — mirror the exact
+    // resulting scrollTop instead of recomputing it independently.
+    if (gSyncEnabled) panelR.elScroll.scrollTop = panelL.elScroll.scrollTop;
+    else scrollToRowIndex(panelR, anchorR);
   });
 })();
 
