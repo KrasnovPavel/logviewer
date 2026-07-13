@@ -217,9 +217,17 @@ body {
 /* ── Wrap lines (toggle) ─────────────────────── */
 body.wrap-lines .log-spacer { display: none; }
 body.wrap-lines .log-window { position: static; }
-body.wrap-lines .log-line   { height: auto; white-space: normal; align-items: flex-start; }
+/* align-items stays at the flexbox default (stretch) here — with height:auto
+   on .col-cell/.lnum, that makes every cell's border/background stretch to
+   match the row's tallest (wrapped) cell. flex-start would leave short fixed
+   columns only as tall as their own single line, so their dividers stop
+   partway down a wrapped row and the next row's cells start right there —
+   reads as rows drawn on top of one another, only visible in column mode
+   since plain text mode has just one cell filling the row. */
+body.wrap-lines .log-line   { height: auto; white-space: normal; }
 body.wrap-lines .ltext      { white-space: pre-wrap; overflow-wrap: anywhere; }
 body.wrap-lines .col-cell   { height: auto; white-space: pre-wrap; overflow: visible; overflow-wrap: anywhere; }
+body.wrap-lines .lnum       { height: auto; }
 
 /* ── Collapse rows ───────────────────────────── */
 .log-collapse { display: flex; align-items: center; height: 20px; cursor: pointer; background: var(--coll-bg); white-space: nowrap; user-select: none; }
@@ -1385,7 +1393,11 @@ class Panel {
           const col     = visible[ci];
           const isLast  = ci === visible.length - 1;
           const gi      = match.indices.groups?.[col.name];
-          const inner   = gi ? buildHighlightHtml(line.slice(gi[0], gi[1]), sliceSpans(spans, gi[0], gi[1])) : '';
+          // A truly empty cell (no inline content at all) can end up with
+          // zero natural line-box height in some engines once .col-cell's
+          // height is auto (wrap mode) instead of the classic fixed 20px —
+          // &nbsp; guarantees there's always real inline content.
+          const inner   = (gi ? buildHighlightHtml(line.slice(gi[0], gi[1]), sliceSpans(spans, gi[0], gi[1])) : '') || '&nbsp;';
           const cellCls = 'col-cell' + (isLast ? ' col-flex' : '');
           const wAttr   = isLast ? '' : ` style="width:${col.width}px"`;
           cellsHtml += `<span class="${cellCls}"${wAttr}>${inner}</span>`;
@@ -1443,9 +1455,7 @@ class Panel {
             cell.className = 'col-cell' + (isLast ? ' col-flex' : '');
             if (!isLast) cell.style.width = col.width + 'px';
             const gi = match.indices.groups?.[col.name];
-            if (gi) {
-              cell.innerHTML = buildHighlightHtml(line.slice(gi[0], gi[1]), sliceSpans(spans, gi[0], gi[1]));
-            }
+            cell.innerHTML = (gi ? buildHighlightHtml(line.slice(gi[0], gi[1]), sliceSpans(spans, gi[0], gi[1])) : '') || '&nbsp;';
             div.appendChild(cell);
           }
           return div;
