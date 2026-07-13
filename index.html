@@ -119,6 +119,23 @@ body {
   transition: background .15s;
 }
 .panel-splitter:hover, .panel-splitter.dragging { background: var(--accent); }
+.panel-splitter.disabled { pointer-events: none; opacity: .3; }
+
+/* ── Panel collapse/expand ───────────────────── */
+.panel.collapsed { flex: 0 0 32px !important; min-width: 32px !important; }
+.panel.collapsed > *:not(.panel-collapse-strip) { display: none !important; }
+.panel-collapse-strip {
+  display: none; flex-direction: column; align-items: center;
+  height: 100%; padding-top: 6px; background: var(--surface);
+}
+.panel.collapsed .panel-collapse-strip { display: flex; }
+.collapse-strip-btn {
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 4px;
+  color: var(--text); width: 22px; height: 22px; font-size: 11px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  transition: border-color .12s;
+}
+.collapse-strip-btn:hover { border-color: var(--accent); }
 
 /* ── Panel top bar ───────────────────────────── */
 .panel-head {
@@ -718,8 +735,17 @@ class Panel {
 
   // ── DOM ───────────────────────────────────────────────────
   _buildDOM() {
+    // Arrows point outward (toward the panel's own edge) to collapse, and
+    // inward (back toward the other panel) to expand — same convention on
+    // both sides regardless of L/R.
+    const collapseIcon = this.panelId === 'L' ? '◀' : '▶';
+    const expandIcon    = this.panelId === 'L' ? '▶' : '◀';
     this.root.innerHTML = `
+      <div class="panel-collapse-strip">
+        <button class="collapse-strip-btn js-expand-btn" title="Expand panel">${expandIcon}</button>
+      </div>
       <div class="panel-head">
+        <button class="tb-btn js-collapse-toggle" title="Collapse panel">${collapseIcon}</button>
         <span class="ph-filename no-file">No file open</span>
         <button class="rm-btn js-close-first" style="display:none" title="Remove this file">×</button>
         <button class="tb-btn js-find-btn" title="Ctrl+F">Find</button>
@@ -831,6 +857,10 @@ class Panel {
     af.addEventListener('change', e => { if (e.target.files.length) this.appendFiles(e.target.files); e.target.value = ''; });
     q('.js-close-first').addEventListener('click', () => this.removeFile(0));
     q('.ph-filename').addEventListener('click', () => { if (this.fileSegments.length > 1) this._toggleFileDropdown(); });
+
+    // Collapse / expand panel
+    q('.js-collapse-toggle').addEventListener('click', () => setPanelCollapsed(this, true));
+    q('.js-expand-btn').addEventListener('click', () => setPanelCollapsed(this, false));
     document.addEventListener('mousedown', e => { if (this._fdOpen && !this.root.contains(e.target)) this._closeFileDropdown(); });
     document.addEventListener('keydown', e => { if (e.key === 'Escape' && this._fdOpen) this._closeFileDropdown(); });
 
@@ -2224,12 +2254,34 @@ document.getElementById('themeBtn').addEventListener('click', () => {
   document.getElementById('themeBtn').textContent = dark ? '☾ Dark' : '☀ Light';
 });
 
+// Collapse a panel to a thin strip and let the other one fill the freed
+// space, or restore both to their pre-collapse widths. The collapsed panel's
+// own sizing is handled entirely by the .collapsed CSS class (!important, so
+// it wins over any inline flex left by a previous splitter drag) — only the
+// *other* panel's inline flex needs to be saved/overridden/restored here.
+function setPanelCollapsed(panel, collapsed) {
+  const other = panel.otherPanel;
+  if (collapsed && other.root.classList.contains('collapsed')) setPanelCollapsed(other, false);
+  panel.root.classList.toggle('collapsed', collapsed);
+  if (collapsed) {
+    other._preCollapseFlex = other.root.style.flex;
+    other.root.style.flex = '1 1 auto';
+  } else if (other._preCollapseFlex !== undefined) {
+    other.root.style.flex = other._preCollapseFlex;
+  }
+  document.getElementById('splitter').classList.toggle('disabled',
+    panel.root.classList.contains('collapsed') || other.root.classList.contains('collapsed'));
+  panel.onResize();
+  other.onResize();
+}
+
 (function () {
   const splitter = document.getElementById('splitter');
   const wrap = document.getElementById('panelsWrap');
   const left = document.getElementById('panelL'), right = document.getElementById('panelR');
   let dragging = false, startX = 0, startLW = 0;
   splitter.addEventListener('mousedown', e => {
+    if (left.classList.contains('collapsed') || right.classList.contains('collapsed')) return;
     dragging = true; startX = e.clientX; startLW = left.getBoundingClientRect().width;
     splitter.classList.add('dragging'); document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none'; e.preventDefault();
   });
@@ -2244,6 +2296,12 @@ document.getElementById('themeBtn').addEventListener('click', () => {
   document.addEventListener('mouseup', () => {
     if (!dragging) return; dragging = false; splitter.classList.remove('dragging');
     document.body.style.cursor = document.body.style.userSelect = '';
+  });
+  splitter.title = 'Drag to resize · Double-click to reset to equal size';
+  splitter.addEventListener('dblclick', () => {
+    if (left.classList.contains('collapsed') || right.classList.contains('collapsed')) return;
+    left.style.flex = ''; right.style.flex = '';
+    panelL.onResize(); panelR.onResize();
   });
 })();
 
