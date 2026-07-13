@@ -214,6 +214,13 @@ body {
 .sh { background: var(--search-hit-bg); border-radius: 2px; padding: 0 1px; }
 .sc { background: var(--search-cur-bg); color: var(--search-cur-fg); border-radius: 2px; padding: 0 1px; font-weight: 600; }
 
+/* ── Wrap lines (toggle) ─────────────────────── */
+body.wrap-lines .log-spacer { display: none; }
+body.wrap-lines .log-window { position: static; }
+body.wrap-lines .log-line   { height: auto; white-space: normal; align-items: flex-start; }
+body.wrap-lines .ltext      { white-space: pre-wrap; overflow-wrap: anywhere; }
+body.wrap-lines .col-cell   { height: auto; white-space: pre-wrap; overflow: visible; overflow-wrap: anywhere; }
+
 /* ── Collapse rows ───────────────────────────── */
 .log-collapse { display: flex; align-items: center; height: 20px; cursor: pointer; background: var(--coll-bg); white-space: nowrap; user-select: none; }
 .log-collapse:hover { background: var(--hover-bg); }
@@ -436,6 +443,7 @@ body {
   <a class="gh-link" href="https://github.com/KrasnovPavel/logviewer" target="_blank" title="View on GitHub">⌥ GitHub</a>
   <span class="flex1"></span>
   <button id="syncToggleBtn" class="tb-btn">⇄ Sync</button>
+  <button id="wrapBtn" class="tb-btn" title="Toggle line wrapping">↵ Wrap: Off</button>
   <button id="exportBtn" class="tb-btn" title="Save all filters, highlights, columns, and sync settings to a file">Export settings</button>
   <button id="importBtn" class="tb-btn" title="Load settings from a previously exported file (reloads page)">Import settings</button>
   <input type="file" id="importFile" accept=".json" style="display:none">
@@ -530,6 +538,10 @@ function hexToRgba(hex, alpha) {
 
 function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
+// ── Wrap lines global ──────────────────────────────────────────
+let gWrapLines = false;
+function wrapActive() { return gWrapLines; }
+
 // ── Temporal sync globals ─────────────────────────────────────
 let gSyncEnabled  = false;
 let gSyncOffsetMs = 0;
@@ -576,6 +588,24 @@ function saveGlobalSync() {
   localStorage.setItem('logviewer-sync', JSON.stringify({ enabled: gSyncEnabled, offsetMs: gSyncOffsetMs }));
 }
 
+// Wrapped sync rows have variable, independently-wrapped heights per panel —
+// equalize each pair so panel A's row i and panel B's row i stay the same
+// height, which is what keeps matching scrollTop values visually aligned.
+function equalizeSyncRowHeights() {
+  const a = panelL.elWindow.children, b = panelR.elWindow.children;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) { a[i].style.height = ''; b[i].style.height = ''; }
+  for (let i = 0; i < n; i++) {
+    const h = Math.max(a[i].offsetHeight, b[i].offsetHeight) + 'px';
+    a[i].style.height = h; b[i].style.height = h;
+  }
+}
+function renderSyncWrapBoth() {
+  panelL._renderSyncWrapped();
+  panelR._renderSyncWrapped();
+  equalizeSyncRowHeights();
+}
+
 function rebuildSync() {
   if (!gSyncEnabled) return;
   // panels may not exist yet during initial load — guard with typeof
@@ -583,11 +613,15 @@ function rebuildSync() {
   panelL._computeSyncTimestamps();
   panelR._computeSyncTimestamps();
   gSyncRows = buildSyncRows(panelL, panelR, gSyncOffsetMs);
-  const h = gSyncRows.length * LINE_H + 'px';
-  panelL.elSpacer.style.height = h;
-  panelR.elSpacer.style.height = h;
-  panelL._renderViewport();
-  panelR._renderViewport();
+  if (wrapActive()) {
+    renderSyncWrapBoth();
+  } else {
+    const h = gSyncRows.length * LINE_H + 'px';
+    panelL.elSpacer.style.height = h;
+    panelR.elSpacer.style.height = h;
+    panelL._renderViewport();
+    panelR._renderViewport();
+  }
   // Update status counters
   const cntA = panelL.syncTimestamps.filter(t => t != null).length;
   const cntB = panelR.syncTimestamps.filter(t => t != null).length;
@@ -804,13 +838,16 @@ class Panel {
 
     // Scroll
     this.elScroll.addEventListener('scroll', () => {
-      this._renderViewport();
+      // In wrap mode every row is already rendered in normal flow (no
+      // windowing) — re-running _renderViewport per scroll tick would
+      // rebuild the entire line list on every frame.
+      if (!wrapActive()) this._renderViewport();
       if (this.elColHeader.classList.contains('show'))
         this.elChInner.style.transform = `translateX(-${this.elScroll.scrollLeft}px)`;
       if (gSyncEnabled && !_syncLock && this.otherPanel) {
         _syncLock = true;
         this.otherPanel.elScroll.scrollTop = this.elScroll.scrollTop;
-        this.otherPanel._renderViewport();
+        if (!wrapActive()) this.otherPanel._renderViewport();
         _syncLock = false;
       }
     }, { passive: true });
@@ -904,8 +941,14 @@ class Panel {
       }
     }
     if (rowIdx !== -1) {
-      const viewH = this.elScroll.clientHeight || 400;
-      this.elScroll.scrollTop = Math.max(0, rowIdx * LINE_H - viewH / 2 + LINE_H / 2);
+      if (wrapActive()) {
+        this._renderViewport();
+        const el = this.elWindow.children[rowIdx];
+        if (el) el.scrollIntoView({ block: 'center' });
+      } else {
+        const viewH = this.elScroll.clientHeight || 400;
+        this.elScroll.scrollTop = Math.max(0, rowIdx * LINE_H - viewH / 2 + LINE_H / 2);
+      }
     }
   }
   _updateSearchInfo() {
@@ -1090,7 +1133,7 @@ class Panel {
     if (gSyncEnabled) { rebuildSync(); return; }
     this._updateSpacer();
 
-    if (anchorLine >= 0) {
+    if (anchorLine >= 0 && !gWrapLines) {
       let newRow = 0;
       for (let r = 0; r < this.displayRows.length; r++) {
         const row = this.displayRows[r];
@@ -1259,7 +1302,11 @@ class Panel {
 
   // ── Virtual scroll ────────────────────────────────────────
   _renderViewport() {
-    if (gSyncEnabled) { this._renderSyncViewport(); return; }
+    if (gSyncEnabled) {
+      if (wrapActive()) renderSyncWrapBoth(); else this._renderSyncViewport();
+      return;
+    }
+    if (wrapActive()) { this._renderWrapped(); return; }
     const total = this.displayRows.length;
     if (!total) { this.elWindow.innerHTML = ''; return; }
     const scrollT = this.elScroll.scrollTop, viewH = this.elScroll.clientHeight || 400;
@@ -1272,9 +1319,20 @@ class Panel {
     this.elWindow.appendChild(frag);
   }
 
+  // When wrapping is on, row heights vary so the fixed-height virtual
+  // window can't be used — render every row in normal document flow and
+  // let the browser drive the scrollbar off actual content height.
+  _renderWrapped() {
+    this.elWindow.style.top = '0px';
+    const frag = document.createDocumentFragment();
+    for (const row of this.displayRows) frag.appendChild(this._makeRow(row));
+    this.elWindow.innerHTML = '';
+    this.elWindow.appendChild(frag);
+  }
+
   _makeRow(row) {
     const div = document.createElement('div');
-    div.style.height = LINE_H + 'px';
+    if (!wrapActive() || (row.type !== 'line' && row.type !== 'fline')) div.style.height = LINE_H + 'px';
 
     if (row.type === 'fsep') {
       div.className = 'log-fsep';
@@ -1554,6 +1612,25 @@ class Panel {
       } else {
         const ph = document.createElement('div');
         ph.className = 'sync-ph'; ph.style.height = LINE_H + 'px';
+        frag.appendChild(ph);
+      }
+    }
+    this.elWindow.innerHTML = '';
+    this.elWindow.appendChild(frag);
+  }
+  // Wrap-mode counterpart of _renderSyncViewport — no windowing (heights vary
+  // per line so the fixed LINE_H math doesn't apply); row-height equalization
+  // across panels happens afterward in equalizeSyncRowHeights().
+  _renderSyncWrapped() {
+    this.elWindow.style.top = '0px';
+    const frag = document.createDocumentFragment();
+    for (const sr of gSyncRows) {
+      const idx = this.syncSide === 'A' ? sr.idxA : sr.idxB;
+      if (idx !== null) {
+        frag.appendChild(this._makeRow({ type: 'line', lineIdx: idx }));
+      } else {
+        const ph = document.createElement('div');
+        ph.className = 'sync-ph';
         frag.appendChild(ph);
       }
     }
@@ -1970,6 +2047,23 @@ document.getElementById('exportBtn').addEventListener('click', () => {
     };
     reader.readAsText(file);
     fileInput.value = '';
+  });
+})();
+
+(function () {
+  const btn = document.getElementById('wrapBtn');
+  gWrapLines = localStorage.getItem('logviewer-wrap') === '1';
+  const apply = () => {
+    document.body.classList.toggle('wrap-lines', wrapActive());
+    btn.textContent = gWrapLines ? '↵ Wrap: On' : '↵ Wrap: Off';
+    panelL._renderViewport();
+    panelR._renderViewport();
+  };
+  apply();
+  btn.addEventListener('click', () => {
+    gWrapLines = !gWrapLines;
+    localStorage.setItem('logviewer-wrap', gWrapLines ? '1' : '0');
+    apply();
   });
 })();
 
