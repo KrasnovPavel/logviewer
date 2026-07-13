@@ -557,7 +557,7 @@ function wrapActive() { return gWrapLines; }
 // ── Temporal sync globals ─────────────────────────────────────
 let gSyncEnabled  = false;
 let gSyncOffsetMs = 0;
-let gSyncRows     = [];   // [{t, idxA, idxB}]  null = placeholder
+let gSyncRows     = [];   // [{t, a, b}] — a/b are {lineIdx} | {coll: row} | null (null = placeholder)
 let _syncLock     = false;
 
 const DEFAULT_SYNC_FMT = 'YYYY-MM-DD HH:mm:ss,SSS';
@@ -575,23 +575,33 @@ function buildTimestampParser(fmt) {
   };
 }
 
+// Collect one panel's timeline entries keyed by (offset-adjusted) timestamp —
+// both real visible lines and collapsed/expanded hidden-run markers, built
+// from displayRows (not visibleSet) so hidden-line runs stay expandable while
+// temporal sync is on. A run's marker is keyed by its first hidden line's
+// timestamp, same as the 'fline' rows it expands into once opened.
+function collectSyncEntries(panel, grp, offsetMs) {
+  const add = (t, entry) => {
+    if (t == null) return;
+    const adj = t + offsetMs;
+    if (!grp.has(adj)) grp.set(adj, []);
+    grp.get(adj).push(entry);
+  };
+  for (const row of panel.displayRows) {
+    if (row.type === 'line' || row.type === 'fline') add(panel.syncTimestamps[row.lineIdx], { lineIdx: row.lineIdx, fline: row.type === 'fline' });
+    else if (row.type === 'coll' || row.type === 'chdr') add(panel.syncTimestamps[row.from], { coll: row });
+  }
+}
 function buildSyncRows(pA, pB, offsetMs) {
   const grpA = new Map(), grpB = new Map();
-  for (const i of pA.visibleSet) {
-    const t = pA.syncTimestamps[i]; if (t == null) continue;
-    if (!grpA.has(t)) grpA.set(t, []); grpA.get(t).push(i);
-  }
-  for (const i of pB.visibleSet) {
-    const t = pB.syncTimestamps[i]; if (t == null) continue;
-    const adj = t + offsetMs;
-    if (!grpB.has(adj)) grpB.set(adj, []); grpB.get(adj).push(i);
-  }
+  collectSyncEntries(pA, grpA, 0);
+  collectSyncEntries(pB, grpB, offsetMs);
   const allT = [...new Set([...grpA.keys(), ...grpB.keys()])].sort((a, b) => a - b);
   const rows = [];
   for (const t of allT) {
-    const ia = grpA.get(t) ?? [], ib = grpB.get(t) ?? [];
-    for (let j = 0, len = Math.max(ia.length, ib.length); j < len; j++)
-      rows.push({ t, idxA: ia[j] ?? null, idxB: ib[j] ?? null });
+    const ea = grpA.get(t) ?? [], eb = grpB.get(t) ?? [];
+    for (let j = 0, len = Math.max(ea.length, eb.length); j < len; j++)
+      rows.push({ t, a: ea[j] ?? null, b: eb[j] ?? null });
   }
   return rows;
 }
@@ -949,7 +959,8 @@ class Panel {
       for (let r = 0; r < this.displayRows.length; r++) {
         const row = this.displayRows[r];
         if ((row.type === 'coll' || row.type === 'chdr') && row.from <= lineIdx && lineIdx < row.to) {
-          this.expandedKeys.add(row.key); this._buildRows(); this._updateSpacer();
+          this.expandedKeys.add(row.key); this._buildRows();
+          if (gSyncEnabled) rebuildSync(); else this._updateSpacer();
           rowIdx = this.displayRows.findIndex(r => (r.type === 'line' || r.type === 'fline') && r.lineIdx === lineIdx);
           break;
         }
@@ -1311,7 +1322,11 @@ class Panel {
   }
   toggleExpand(key) {
     if (this.expandedKeys.has(key)) this.expandedKeys.delete(key); else this.expandedKeys.add(key);
-    this._buildRows(); this._updateSpacer(); this._renderViewport();
+    this._buildRows();
+    // gSyncRows is built from both panels' displayRows, so expanding here
+    // has to regenerate it rather than just re-rendering this panel alone.
+    if (gSyncEnabled) { rebuildSync(); return; }
+    this._updateSpacer(); this._renderViewport();
   }
   _updateSpacer() { this.elSpacer.style.height = (this.displayRows.length * LINE_H) + 'px'; }
 
@@ -1690,10 +1705,11 @@ class Panel {
     this.elWindow.style.top = (start * LINE_H) + 'px';
     const frag = document.createDocumentFragment();
     for (let r = start; r <= end; r++) {
-      const sr  = gSyncRows[r];
-      const idx = this.syncSide === 'A' ? sr.idxA : sr.idxB;
-      if (idx !== null) {
-        frag.appendChild(this._makeRow({ type: 'line', lineIdx: idx }));
+      const entry = this.syncSide === 'A' ? gSyncRows[r].a : gSyncRows[r].b;
+      if (entry?.coll) {
+        frag.appendChild(this._makeRow(entry.coll));
+      } else if (entry) {
+        frag.appendChild(this._makeRow({ type: entry.fline ? 'fline' : 'line', lineIdx: entry.lineIdx }));
       } else {
         const ph = document.createElement('div');
         ph.className = 'sync-ph'; ph.style.height = LINE_H + 'px';
@@ -1705,17 +1721,30 @@ class Panel {
   }
   // Wrap-mode counterpart of _renderSyncViewport — no windowing (heights vary
   // per line so the fixed LINE_H math doesn't apply); row-height equalization
-  // across panels happens afterward in equalizeSyncRowHeights(). Sync rows
-  // never carry listeners (no collapse/fsep rows here), so this can just
-  // build one HTML string and parse it in a single shot.
+  // across panels happens afterward in equalizeSyncRowHeights(). Collapse/chdr
+  // entries carry a click listener (to expand/collapse), so — like
+  // _renderWrapped — line entries are batched into HTML parsed in bulk while
+  // collapse entries go through _makeRow() as real elements.
   _renderSyncWrapped() {
     this.elWindow.style.top = '0px';
-    let html = '';
+    const frag = document.createDocumentFragment();
+    const tmp = document.createElement('div');
+    let buf = '';
+    const flush = () => {
+      if (!buf) return;
+      tmp.innerHTML = buf;
+      while (tmp.firstChild) frag.appendChild(tmp.firstChild);
+      buf = '';
+    };
     for (const sr of gSyncRows) {
-      const idx = this.syncSide === 'A' ? sr.idxA : sr.idxB;
-      html += idx !== null ? this._lineRowHtml({ type: 'line', lineIdx: idx }) : '<div class="sync-ph"></div>';
+      const entry = this.syncSide === 'A' ? sr.a : sr.b;
+      if (entry?.coll) { flush(); frag.appendChild(this._makeRow(entry.coll)); }
+      else if (entry) buf += this._lineRowHtml({ type: entry.fline ? 'fline' : 'line', lineIdx: entry.lineIdx });
+      else buf += '<div class="sync-ph"></div>';
     }
-    this.elWindow.innerHTML = html;
+    flush();
+    this.elWindow.innerHTML = '';
+    this.elWindow.appendChild(frag);
   }
   _saveSyncCfg() {
     localStorage.setItem(this._storageKey('synccfg'), JSON.stringify({ timeCol: this.syncTimeCol, timeFmt: this.syncTimeFmt }));
