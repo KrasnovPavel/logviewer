@@ -24,9 +24,10 @@
   --excl-fg:     #f48771;
   --lnum-fg:     #444;
   --lnum-sep:    #2e2e2e;
-  --search-hit-bg:  rgba(255,140,0,.35);
+  --search-hit-bg:  rgba(255,159,0,.6);
   --search-cur-bg:  #e8a020;
   --search-cur-fg:  #000;
+  --search-line-bg: rgba(232,160,32,.07);
   --hover-bg:    rgba(255,255,255,.04);
   --coll-bg:     rgba(255,255,255,.025);
   --fline-bg:    rgba(255,255,255,.06);
@@ -57,6 +58,7 @@
   --search-hit-bg:  rgba(255,140,0,.3);
   --search-cur-bg:  #e8a020;
   --search-cur-fg:  #fff;
+  --search-line-bg: rgba(232,160,32,.09);
   --hover-bg:    rgba(0,0,0,.04);
   --coll-bg:     rgba(0,0,0,.03);
   --fline-bg:    rgba(0,0,0,.055);
@@ -222,6 +224,7 @@ body {
 .log-line.fline       { background: var(--fline-bg); border-left: 2px solid var(--fline-bar); }
 .log-line.fline:hover { background: var(--hover-bg); }
 .log-line.cur-line    { background: var(--cur-line-bg) !important; }
+.log-line.search-line { background: var(--search-line-bg); }
 .lnum {
   display: inline-block; width: 58px; min-width: 58px; text-align: right;
   padding: 0 9px 0 4px; color: var(--lnum-fg); font-size: 11px;
@@ -1539,8 +1542,13 @@ class Panel {
       const curLine = this.searchCurIdx >= 0 ? this.searchMatches[this.searchCurIdx] : -1;
       const isCur   = row.lineIdx === curLine;
       const hlStyle = this._lineHighlightStyle(row.lineIdx);
+      let isSearchLine = false;
+      if (!isCur && this.searchRe) {
+        this.searchRe.lastIndex = 0;
+        isSearchLine = this.searchRe.test(this.allLines[row.lineIdx]);
+      }
 
-      div.className = 'log-line' + (row.type === 'fline' ? ' fline' : '') + (isCur ? ' cur-line' : '');
+      div.className = 'log-line' + (row.type === 'fline' ? ' fline' : '') + (isCur ? ' cur-line' : isSearchLine ? ' search-line' : '');
       if (!isCur) {
         if (hlStyle.bg) div.style.background = hlStyle.bg;
         if (hlStyle.fg) div.style.color = hlStyle.fg;
