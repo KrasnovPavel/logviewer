@@ -166,15 +166,16 @@ body {
 
 /* ── Search bar ──────────────────────────────── */
 .search-bar {
-  flex-shrink: 0;
+  position: absolute; top: 8px; right: 24px; z-index: 10;
   background: var(--surface2);
-  border-bottom: 1px solid var(--border);
+  border: 1px solid var(--border); border-radius: 6px;
   padding: 4px 8px;
   display: none; align-items: center; gap: 5px;
+  box-shadow: 0 4px 14px rgba(0,0,0,.4);
 }
 .search-bar.open { display: flex; }
 .search-input {
-  flex: 1; min-width: 0; height: 24px;
+  width: 200px; height: 24px;
   background: var(--surface); border: 1px solid var(--border); border-radius: 4px;
   color: var(--text); padding: 0 7px; font-family: inherit; font-size: 12px; outline: none;
   transition: border-color .12s;
@@ -793,14 +794,14 @@ class Panel {
         <input type="file" class="js-fileinput" style="display:none" multiple>
         <input type="file" class="js-addfileinput" style="display:none" multiple>
       </div>
-      <div class="search-bar js-search-bar">
-        <input class="search-input js-search-input" placeholder="find regex…" spellcheck="false">
-        <span class="search-info js-search-info">—</span>
-        <button class="snav-btn js-prev" title="Shift+Enter">↑</button>
-        <button class="snav-btn js-next" title="Enter">↓</button>
-        <button class="search-close js-search-close">×</button>
-      </div>
       <div class="panel-log js-logarea">
+        <div class="search-bar js-search-bar">
+          <input class="search-input js-search-input" placeholder="find regex…" spellcheck="false">
+          <span class="search-info js-search-info">—</span>
+          <button class="snav-btn js-prev" title="Shift+Enter">↑</button>
+          <button class="snav-btn js-next" title="Enter">↓</button>
+          <button class="search-close js-search-close">×</button>
+        </div>
         <div class="col-header js-col-header"><div class="ch-inner js-ch-inner"></div></div>
         <div class="drop-overlay js-overlay">
           <div class="drop-box"><div class="drop-icon">📂</div><div>Drop log file here</div></div>
