@@ -158,7 +158,8 @@ body {
 .ph-fd-wrap.open { display: block; }
 .ph-fd-item { display: flex; align-items: center; gap: 6px; padding: 3px 8px; font-size: 12px; }
 .ph-fd-item:hover { background: var(--hover-bg); }
-.ph-fd-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ph-fd-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.ph-fd-name:hover { text-decoration: underline; }
 .ph-fd-foot { padding: 4px 8px; border-top: 1px solid var(--border); }
 
 /* ── Search bar ──────────────────────────────── */
@@ -1018,7 +1019,7 @@ class Panel {
     this._updateSearchInfo();
     this._renderViewport();
   }
-  _scrollToLine(lineIdx) {
+  _scrollToLine(lineIdx, align = 'center') {
     let rowIdx = this.displayRows.findIndex(r => (r.type === 'line' || r.type === 'fline') && r.lineIdx === lineIdx);
     if (rowIdx === -1) {
       for (let r = 0; r < this.displayRows.length; r++) {
@@ -1041,9 +1042,9 @@ class Panel {
         const n = this._activeRowCount();
         this._ensureWrapPrefix(n);
         const y = this._wrapPrefix[Math.max(0, Math.min(rowIdx, n))];
-        this.elScroll.scrollTop = Math.max(0, y - viewH / 2);
+        this.elScroll.scrollTop = align === 'top' ? Math.max(0, y) : Math.max(0, y - viewH / 2);
       } else {
-        this.elScroll.scrollTop = Math.max(0, rowIdx * LINE_H - viewH / 2 + LINE_H / 2);
+        this.elScroll.scrollTop = align === 'top' ? Math.max(0, rowIdx * LINE_H) : Math.max(0, rowIdx * LINE_H - viewH / 2 + LINE_H / 2);
       }
     }
   }
@@ -1991,7 +1992,8 @@ class Panel {
     const list = document.createElement('div');
     this.fileSegments.forEach((seg, i) => {
       const item = document.createElement('div'); item.className = 'ph-fd-item';
-      const name = document.createElement('span'); name.className = 'ph-fd-name'; name.textContent = '📄 ' + seg.name; name.title = seg.name;
+      const name = document.createElement('span'); name.className = 'ph-fd-name'; name.textContent = '📄 ' + seg.name; name.title = 'Jump to start of ' + seg.name;
+      name.addEventListener('click', e => { e.stopPropagation(); this._scrollToLine(seg.startLine, 'top'); this._closeFileDropdown(); });
       const rm   = document.createElement('button'); rm.className = 'rm-btn'; rm.textContent = '×'; rm.title = 'Remove this file';
       rm.addEventListener('click', e => { e.stopPropagation(); this.removeFile(i); });
       item.append(name, rm); list.appendChild(item);
