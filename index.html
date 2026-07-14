@@ -1884,7 +1884,7 @@ class Panel {
         results[idx] = { name: file.name, text: e.target.result };
         if (--pending === 0) {
           this.allLines = []; this.fileSegments = [];
-          this._mergeFiles(results);
+          this._mergeFiles(files.length > 1 ? this._sortByFirstTimestamp(results) : results);
         }
       };
       reader.readAsText(file);
@@ -1899,10 +1899,42 @@ class Panel {
       const reader = new FileReader();
       reader.onload = e => {
         results[idx] = { name: file.name, text: e.target.result };
-        if (--pending === 0) this._mergeFiles(results);
+        if (--pending === 0) this._mergeFiles(files.length > 1 ? this._sortByFirstTimestamp(results) : results);
       };
       reader.readAsText(file);
     });
+  }
+
+  // Timestamp of a file's first line, using the panel's configured column
+  // regex + sync format when available, else the default log timestamp
+  // pattern — same parsing machinery temporal sync uses per-line.
+  _firstLineTimestamp(text) {
+    const nl = text.indexOf('\n');
+    const firstLine = (nl === -1 ? text : text.slice(0, nl)).replace(/\r$/, '');
+    if (this.colRegex && this.colValid) {
+      const m = this.colRegex.exec(firstLine);
+      const key = this.syncTimeCol || 'timestamp';
+      if (m?.groups?.[key] !== undefined) {
+        const t = buildTimestampParser(this.syncTimeFmt || DEFAULT_SYNC_FMT)(m.groups[key]);
+        if (t != null) return t;
+      }
+    }
+    return buildTimestampParser(DEFAULT_SYNC_FMT)(firstLine);
+  }
+
+  // Multiple files dropped/opened at once get ordered by their first line's
+  // timestamp before being appended into allLines — files with no parseable
+  // timestamp keep their original relative order and sort after timestamped ones.
+  _sortByFirstTimestamp(results) {
+    return results
+      .map((r, i) => ({ r, i, t: this._firstLineTimestamp(r.text) }))
+      .sort((a, b) => {
+        if (a.t == null && b.t == null) return a.i - b.i;
+        if (a.t == null) return 1;
+        if (b.t == null) return -1;
+        return a.t - b.t || a.i - b.i;
+      })
+      .map(x => x.r);
   }
 
   _mergeFiles(results) {
