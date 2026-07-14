@@ -211,6 +211,20 @@ body {
 .empty-panel { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--text-dim); }
 .empty-icon  { font-size: 44px; opacity: .2; line-height: 1; }
 .empty-label { font-size: 13px; }
+.load-overlay {
+  position: absolute; inset: 0; z-index: 25; background: var(--surface);
+  display: none; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+}
+.load-overlay.show { display: flex; }
+.load-spinner {
+  width: 30px; height: 30px; border-radius: 50%;
+  border: 3px solid var(--border); border-top-color: var(--accent);
+  animation: load-spin .7s linear infinite;
+}
+@keyframes load-spin { to { transform: rotate(360deg); } }
+.load-label { font-size: 12px; color: var(--text-dim); }
+.load-bar { width: 200px; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; }
+.load-bar-fill { height: 100%; width: 0%; background: var(--accent); transition: width .1s linear; }
 .log-scroll  { position: absolute; inset: 0; overflow: auto; display: none; }
 .log-scroll::-webkit-scrollbar        { width: 8px; height: 8px; }
 .log-scroll::-webkit-scrollbar-track  { background: transparent; }
@@ -819,6 +833,11 @@ class Panel {
         <div class="empty-panel js-empty">
           <div class="empty-icon">🗒</div><div class="empty-label">Drop a file or click Open</div>
         </div>
+        <div class="load-overlay js-load-overlay">
+          <div class="load-spinner"></div>
+          <div class="load-label js-load-label">Loading…</div>
+          <div class="load-bar"><div class="load-bar-fill js-load-bar-fill"></div></div>
+        </div>
         <div class="log-scroll js-scroll">
           <div class="log-spacer js-spacer"></div>
           <div class="log-window js-window"></div>
@@ -878,6 +897,9 @@ class Panel {
     this.elHlBadge   = q('.js-hlbadge');
     this.elOverlay   = q('.js-overlay');
     this.elEmpty     = q('.js-empty');
+    this.elLoad      = q('.js-load-overlay');
+    this.elLoadLabel = q('.js-load-label');
+    this.elLoadBar   = q('.js-load-bar-fill');
     this.elScroll    = q('.js-scroll');
     this.elSpacer    = q('.js-spacer');
     this.elWindow    = q('.js-window');
@@ -1912,34 +1934,52 @@ class Panel {
 
   loadFile(file) { this.loadFiles([file]); }
 
-  loadFiles(fileList) {
-    const files = Array.from(fileList);
+  // Reading itself is async (FileReader yields between readAsText and its
+  // onload), which is what gives the browser a chance to actually paint the
+  // spinner shown here before the heavier, fully-synchronous merge/filter
+  // work below runs on the main thread.
+  _showLoading(fileCount) {
+    this.elLoadLabel.textContent = fileCount > 1 ? `Loading ${fileCount} files…` : 'Loading…';
+    this.elLoadBar.style.width = '0%';
+    this.elLoad.classList.add('show');
+  }
+  _hideLoading() { this.elLoad.classList.remove('show'); }
+
+  _readFiles(files, onDone) {
+    this._showLoading(files.length);
     let pending = files.length;
     const results = new Array(files.length);
+    const loaded  = new Array(files.length).fill(0);
+    const total   = files.reduce((s, f) => s + (f.size || 0), 0);
+    const reportProgress = () => {
+      if (total > 0) this.elLoadBar.style.width = (loaded.reduce((s, v) => s + v, 0) / total * 100) + '%';
+    };
+    const done = (idx, text) => {
+      loaded[idx] = files[idx].size; reportProgress();
+      results[idx] = { name: files[idx].name, text };
+      if (--pending === 0) { onDone(results); this._hideLoading(); }
+    };
     files.forEach((file, idx) => {
       const reader = new FileReader();
-      reader.onload = e => {
-        results[idx] = { name: file.name, text: e.target.result };
-        if (--pending === 0) {
-          this.allLines = []; this.fileSegments = [];
-          this._mergeFiles(files.length > 1 ? this._sortByFirstTimestamp(results) : results);
-        }
-      };
+      reader.onprogress = e => { if (e.lengthComputable) { loaded[idx] = e.loaded; reportProgress(); } };
+      reader.onload  = e => done(idx, e.target.result);
+      reader.onerror = () => done(idx, '');
       reader.readAsText(file);
+    });
+  }
+
+  loadFiles(fileList) {
+    const files = Array.from(fileList);
+    this._readFiles(files, results => {
+      this.allLines = []; this.fileSegments = [];
+      this._mergeFiles(files.length > 1 ? this._sortByFirstTimestamp(results) : results);
     });
   }
 
   appendFiles(fileList) {
     const files = Array.from(fileList);
-    let pending = files.length;
-    const results = new Array(files.length);
-    files.forEach((file, idx) => {
-      const reader = new FileReader();
-      reader.onload = e => {
-        results[idx] = { name: file.name, text: e.target.result };
-        if (--pending === 0) this._mergeFiles(files.length > 1 ? this._sortByFirstTimestamp(results) : results);
-      };
-      reader.readAsText(file);
+    this._readFiles(files, results => {
+      this._mergeFiles(files.length > 1 ? this._sortByFirstTimestamp(results) : results);
     });
   }
 
