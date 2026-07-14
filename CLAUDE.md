@@ -18,4 +18,4 @@ Wrap-mode virtualization has historically been reworked repeatedly (multiple com
 
 - **Do not start a dev/preview server** to check changes (no `preview_start`, `python -m http.server`, `npx serve`, etc.). This is plain static HTML/CSS/JS — verify by opening `index.html` directly in a browser, or point the user to do so. The user reviews changes by manual browser review, not via a server.
 - No test suite exists — "verification" means manually exercising the feature in a browser, not running tests or a typechecker.
-- **Never run `git commit` without the user reviewing the change first**, even if they previously asked for the underlying change or said "commit." Stage/show the diff and get explicit go-ahead at the moment of committing before running `git commit`.
+- **Never run `git commit` on your own initiative** — only commit when the user explicitly asks for it in chat. Once they say "commit" (or clear equivalent), commit right away: no need to show the diff or ask for a second confirmation first.
