@@ -1022,16 +1022,34 @@ class Panel {
     this._updateSearchInfo();
     this._renderViewport();
   }
+  // In sync mode, row positions are per the shared gSyncRows timeline, not
+  // this panel's own displayRows (which omit the placeholder rows inserted
+  // to align with the other panel) — a search jump has to resolve rowIdx
+  // against whichever list actually drives this panel's scroll math.
+  _sideEntry(sr) { return this.syncSide === 'A' ? sr.a : sr.b; }
   _scrollToLine(lineIdx, align = 'center') {
-    let rowIdx = this.displayRows.findIndex(r => (r.type === 'line' || r.type === 'fline') && r.lineIdx === lineIdx);
-    if (rowIdx === -1) {
-      for (let r = 0; r < this.displayRows.length; r++) {
-        const row = this.displayRows[r];
-        if ((row.type === 'coll' || row.type === 'chdr') && row.from <= lineIdx && lineIdx < row.to) {
-          this.expandedKeys.add(row.key); this._buildRows();
-          if (gSyncEnabled) rebuildSync(); else this._updateSpacer();
-          rowIdx = this.displayRows.findIndex(r => (r.type === 'line' || r.type === 'fline') && r.lineIdx === lineIdx);
-          break;
+    let rowIdx;
+    if (gSyncEnabled) {
+      rowIdx = gSyncRows.findIndex(sr => { const e = this._sideEntry(sr); return e && !e.coll && e.lineIdx === lineIdx; });
+      if (rowIdx === -1) {
+        const collIdx = gSyncRows.findIndex(sr => { const e = this._sideEntry(sr); return e?.coll && e.coll.from <= lineIdx && lineIdx < e.coll.to; });
+        if (collIdx !== -1) {
+          this.expandedKeys.add(this._sideEntry(gSyncRows[collIdx]).coll.key);
+          this._buildRows(); rebuildSync();
+          rowIdx = gSyncRows.findIndex(sr => { const e = this._sideEntry(sr); return e && !e.coll && e.lineIdx === lineIdx; });
+        }
+      }
+    } else {
+      rowIdx = this.displayRows.findIndex(r => (r.type === 'line' || r.type === 'fline') && r.lineIdx === lineIdx);
+      if (rowIdx === -1) {
+        for (let r = 0; r < this.displayRows.length; r++) {
+          const row = this.displayRows[r];
+          if ((row.type === 'coll' || row.type === 'chdr') && row.from <= lineIdx && lineIdx < row.to) {
+            this.expandedKeys.add(row.key); this._buildRows();
+            this._updateSpacer();
+            rowIdx = this.displayRows.findIndex(r => (r.type === 'line' || r.type === 'fline') && r.lineIdx === lineIdx);
+            break;
+          }
         }
       }
     }
