@@ -225,6 +225,7 @@ body {
 .load-label { font-size: 12px; color: var(--text-dim); }
 .load-bar { width: 200px; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; }
 .load-bar-fill { height: 100%; width: 0%; background: var(--accent); transition: width .1s linear; }
+.load-overlay.indeterminate .load-bar { display: none; }
 .log-scroll  { position: absolute; inset: 0; overflow: auto; display: none; }
 .log-scroll::-webkit-scrollbar        { width: 8px; height: 8px; }
 .log-scroll::-webkit-scrollbar-track  { background: transparent; }
@@ -725,6 +726,26 @@ function rebuildSync() {
   const sbEl = document.getElementById('syncStatusB');
   if (saEl) saEl.textContent = cntA ? `${cntA.toLocaleString()} ts` : 'no ts found';
   if (sbEl) sbEl.textContent = cntB ? `${cntB.toLocaleString()} ts` : 'no ts found';
+}
+
+// Enabling sync or editing its column/format/offset re-parses timestamps
+// across both files and rebuilds the merged timeline — can take a while on
+// large files. Show the spinner, then defer the actual rebuild two frames so
+// the browser gets a chance to paint it before the synchronous work below
+// blocks the main thread. A generation token collapses bursts of rapid edits
+// (e.g. typing in the format field) into a single rebuild — superseded calls
+// just leave the spinner up until the latest one finishes.
+let _syncLoadGen = 0;
+function rebuildSyncWithLoading() {
+  const gen = ++_syncLoadGen;
+  panelL._showLoading('Syncing…', true);
+  panelR._showLoading('Syncing…', true);
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (gen !== _syncLoadGen) return;
+    rebuildSync();
+    panelL._hideLoading();
+    panelR._hideLoading();
+  }));
 }
 
 function sliceSpans(spans, start, end) {
@@ -1938,15 +1959,16 @@ class Panel {
   // onload), which is what gives the browser a chance to actually paint the
   // spinner shown here before the heavier, fully-synchronous merge/filter
   // work below runs on the main thread.
-  _showLoading(fileCount) {
-    this.elLoadLabel.textContent = fileCount > 1 ? `Loading ${fileCount} files…` : 'Loading…';
+  _showLoading(label, indeterminate = false) {
+    this.elLoadLabel.textContent = label;
     this.elLoadBar.style.width = '0%';
+    this.elLoad.classList.toggle('indeterminate', indeterminate);
     this.elLoad.classList.add('show');
   }
   _hideLoading() { this.elLoad.classList.remove('show'); }
 
   _readFiles(files, onDone) {
-    this._showLoading(files.length);
+    this._showLoading(files.length > 1 ? `Loading ${files.length} files…` : 'Loading…');
     let pending = files.length;
     const results = new Array(files.length);
     const loaded  = new Array(files.length).fill(0);
@@ -2285,7 +2307,7 @@ panelR.syncSide = 'B'; panelR.otherPanel = panelL;
     gSyncEnabled = e.target.checked;
     saveGlobalSync();
     if (gSyncEnabled) {
-      rebuildSync();
+      rebuildSyncWithLoading();
     } else {
       gSyncRows = [];
       // The active row list switches from gSyncRows-indexed back to
@@ -2300,13 +2322,13 @@ panelR.syncSide = 'B'; panelR.otherPanel = panelL;
   offsetEl.addEventListener('input', e => {
     gSyncOffsetMs = parseInt(e.target.value) || 0;
     saveGlobalSync();
-    if (gSyncEnabled) rebuildSync();
+    if (gSyncEnabled) rebuildSyncWithLoading();
   });
 
-  colAEl.addEventListener('input', e => { panelL.syncTimeCol = e.target.value.trim(); panelL._saveSyncCfg(); if (gSyncEnabled) rebuildSync(); });
-  fmtAEl.addEventListener('input', e => { panelL.syncTimeFmt = e.target.value.trim(); panelL._saveSyncCfg(); if (gSyncEnabled) rebuildSync(); });
-  colBEl.addEventListener('input', e => { panelR.syncTimeCol = e.target.value.trim(); panelR._saveSyncCfg(); if (gSyncEnabled) rebuildSync(); });
-  fmtBEl.addEventListener('input', e => { panelR.syncTimeFmt = e.target.value.trim(); panelR._saveSyncCfg(); if (gSyncEnabled) rebuildSync(); });
+  colAEl.addEventListener('input', e => { panelL.syncTimeCol = e.target.value.trim(); panelL._saveSyncCfg(); if (gSyncEnabled) rebuildSyncWithLoading(); });
+  fmtAEl.addEventListener('input', e => { panelL.syncTimeFmt = e.target.value.trim(); panelL._saveSyncCfg(); if (gSyncEnabled) rebuildSyncWithLoading(); });
+  colBEl.addEventListener('input', e => { panelR.syncTimeCol = e.target.value.trim(); panelR._saveSyncCfg(); if (gSyncEnabled) rebuildSyncWithLoading(); });
+  fmtBEl.addEventListener('input', e => { panelR.syncTimeFmt = e.target.value.trim(); panelR._saveSyncCfg(); if (gSyncEnabled) rebuildSyncWithLoading(); });
 })();
 
 // ── Settings export / import ─────────────────────────────────
