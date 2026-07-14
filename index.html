@@ -233,6 +233,15 @@ body {
   user-select: none; flex-shrink: 0;
 }
 .ltext { white-space: pre; flex: 1; }
+/* Line numbers (toggle) — the gutter is hidden by default; body.show-lnum
+   reveals it. All four "gutter" elements (line rows, collapse-run rows,
+   the column-mode header, and file-separator rows) share the same
+   58px+border+margin sizing so text stays aligned across row types —
+   they're toggled together so that alignment never breaks. */
+body:not(.show-lnum) .lnum,
+body:not(.show-lnum) .lnum-dot,
+body:not(.show-lnum) .ch-lnum,
+body:not(.show-lnum) .fsep-icon { display: none; }
 .sh { background: var(--search-hit-bg); border-radius: 2px; padding: 0 1px; }
 .sc { background: var(--search-cur-bg); color: var(--search-cur-fg); border-radius: 2px; padding: 0 1px; font-weight: 600; }
 
@@ -477,6 +486,7 @@ body.wrap-lines .lnum       { height: auto; }
   <span class="flex1"></span>
   <button id="syncToggleBtn" class="tb-btn">⇄ Sync</button>
   <button id="wrapBtn" class="tb-btn" title="Toggle line wrapping">↵ Wrap: Off</button>
+  <button id="lnumBtn" class="tb-btn" title="Toggle line numbers">☰ Line #: Off</button>
   <button id="exportBtn" class="tb-btn" title="Save all filters, highlights, columns, and sync settings to a file">Export settings</button>
   <button id="importBtn" class="tb-btn" title="Load settings from a previously exported file (reloads page)">Import settings</button>
   <input type="file" id="importFile" accept=".json" style="display:none">
@@ -2377,6 +2387,28 @@ function applyResizeAnchor(anchor, done) {
     // resulting scrollTop instead of recomputing it independently.
     if (gSyncEnabled) panelR.elScroll.scrollTop = panelL.elScroll.scrollTop;
     else scrollToRowIndex(panelR, anchorR);
+  });
+})();
+
+(function () {
+  const btn = document.getElementById('lnumBtn');
+  let showLnum = localStorage.getItem('logviewer-lnum') === '1';
+  const apply = () => {
+    document.body.classList.toggle('show-lnum', showLnum);
+    btn.textContent = showLnum ? '☰ Line #: On' : '☰ Line #: Off';
+  };
+  apply();
+  btn.addEventListener('click', () => {
+    // Hiding/showing the gutter changes each panel's available text width,
+    // which in wrap mode shifts where lines wrap — re-render like a resize
+    // so visible rows pick up correct heights (off-screen rows self-correct
+    // once scrolled to, same as window resize already tolerates).
+    const anchorL = topRowIndex(panelL);
+    const anchorR = topRowIndex(panelR);
+    showLnum = !showLnum;
+    localStorage.setItem('logviewer-lnum', showLnum ? '1' : '0');
+    apply();
+    applyResizeAnchor({ l: anchorL, r: anchorR });
   });
 })();
 
